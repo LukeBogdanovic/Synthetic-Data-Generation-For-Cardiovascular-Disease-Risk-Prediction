@@ -1,12 +1,4 @@
 /.vscode
-/Include
-/Lib
-/Scripts
 /code
-/dataset
 /imdb_cnn_model.h5
 /mnist_cnn_model.h5
-/model.png
-/pyvenv.cfg
-/share
-/test.keras
