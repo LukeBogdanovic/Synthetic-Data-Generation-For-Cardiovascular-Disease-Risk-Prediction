@@ -10,7 +10,7 @@ from sklearn.impute import SimpleImputer
 from keras import Input, Model
 from keras.api.optimizers import Adam
 from sklearn.preprocessing import StandardScaler
-from keras.api.layers import Dense, Flatten, Conv1D, Concatenate, Reshape
+from keras.api.layers import Dense, Flatten, Conv1D, Concatenate, Reshape, LeakyReLU
 from keras.api.metrics import Precision, Recall, Accuracy
 
 
@@ -116,14 +116,14 @@ def build_discriminator(ecg_shape=(3,1536), crf_dim=14):
 
     combined_input = Concatenate()([crf_input, input_condition])
 
-    x_ecg = Conv1D(64,kernel_size=15, activation='relu', strides=2, padding='same')(ecg_input)
-    x_ecg = Conv1D(128, kernel_size=15, activation='relu', strides=2, padding='same')(x_ecg)
+    x_ecg = Conv1D(64,kernel_size=15, activation=LeakyReLU(alpha=0.2), strides=2, padding='same')(ecg_input)
+    x_ecg = Conv1D(128, kernel_size=15, activation=LeakyReLU(alpha=0.2), strides=2, padding='same')(x_ecg)
     x_ecg = Flatten()(x_ecg)
 
-    x_crf = Dense(128, activation='relu')(combined_input)
+    x_crf = Dense(128, activation=LeakyReLU(alpha=0.2))(combined_input)
 
     combined = Concatenate()([x_ecg, x_crf])
-    combined = Dense(128, activation='relu')(combined)
+    combined = Dense(128, activation=LeakyReLU(alpha=0.2))(combined)
     x_combined = Dense(1, activation='sigmoid')(combined)
     
     return Model([ecg_input, crf_input, input_condition], x_combined, name="Discriminator")
@@ -146,8 +146,10 @@ def train_gan(dataset, epochs=1000, batch_size=16, latent_dim=100):
     validity = discriminator([gen_ecg, gen_crf, real_crf])
     combined = Model([noise, real_crf], validity)
     combined.compile(optimizer=Adam(1e-4, beta_1=0.5), loss='binary_crossentropy', metrics=[Accuracy(), Precision(), Recall()])
-    discriminator.compile(optimizer=Adam(1e-4, beta_1=0.5), loss='binary_crossentropy', metrics=[Accuracy(), Precision(), Recall()])
+    combined.summary()
+    discriminator.compile(optimizer=Adam(1e-5, beta_1=0.5), loss='binary_crossentropy', metrics=[Accuracy(), Precision(), Recall()])
     discriminator.trainable = False
+    discriminator.summary()
     # Training loop
     for epoch in range(epochs):
         idxs = np.random.randint(0, len(dataset), batch_size)
@@ -168,16 +170,13 @@ def train_gan(dataset, epochs=1000, batch_size=16, latent_dim=100):
         g_loss = combined.train_on_batch([noise, real_crfs], np.ones((batch_size,1)))
 
         if epoch % 10 == 0:
-            print(f"Epoch {epoch} | D Loss Real: {d_loss_real} | D Loss Fake: {d_loss_fake} | G Loss: {g_loss}")
-    
+            print(f"Epoch {epoch}:")
+            print(f"     D Loss Real: {d_loss_real[0] :.4f} | D Loss Fake: {d_loss_fake[0] :.4f} | G Loss: {g_loss[0] :.4f}")
+            print(f"     D Acc Real: {d_loss_real[1] :.4f} | D Acc Fake: {d_loss_fake[1] :.4f} | G Acc: {g_loss[1] :.4f}")
+            print(f"     D Precision Real: {d_loss_real[2] :.4f} | D Precision Fake: {d_loss_fake[2] :.4f} | G Precision: {g_loss[2] :.4f}")
+            print(f"     D Recall Real: {d_loss_real[3] :.4f} | D Recall Fake: {d_loss_fake[3] :.4f} | G Recall: {g_loss[3] :.4f}")
+
     combined.save(f"gan/Model.keras")
-
-
-def save_model():
-    '''
-    Saves the generator model to allow for generation of new data
-    '''
-    pass
 
 
 def main():
