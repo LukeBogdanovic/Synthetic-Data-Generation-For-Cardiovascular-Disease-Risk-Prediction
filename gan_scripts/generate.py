@@ -107,7 +107,6 @@ gen_ecgs = model.predict(noise)
 # Concatenate the generated segments
 gen_ecgs_full = np.concatenate(gen_ecgs, axis=0)
 gen_ecgs_full = reverse_ecg_normalization(gen_ecgs_full, m_scaler)
-print(gen_ecgs_full.shape)
 plt.figure(0, figsize=(12, 6))
 for lead_idx in range(gen_ecgs_full.shape[1]):
     plt.subplot(3, 1, lead_idx + 1)
