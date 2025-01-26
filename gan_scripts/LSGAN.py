@@ -156,7 +156,7 @@ def train_gan(generator, discriminator, dataset, g_optimizer: Adam, d_optimizer:
         noise = tf.random.normal((batch_size, latent_dim))
         fake_ecg, fake_crf_n, fake_crf_g, fake_crf_s, fake_crf_v = generator(
             noise, training=True)
-        with tf.GradientTape() as d_tape:
+        with tf.GradientTape(persistent=True) as d_tape:
             pred_real = discriminator(
                 [real_ecg, real_crf_n, real_crf_g, real_crf_s, real_crf_v], training=True)
             pred_fake = discriminator(
@@ -168,7 +168,7 @@ def train_gan(generator, discriminator, dataset, g_optimizer: Adam, d_optimizer:
         d_optimizer.apply_gradients(
             zip(d_grads, discriminator.trainable_variables))
         noise2 = tf.random.normal((batch_size, latent_dim))
-        with tf.GradientTape() as g_tape:
+        with tf.GradientTape(persistent=True) as g_tape:
             fake_ecg2, fake_crf_n2, fake_crf_g2, fake_crf_s2, fake_crf_v2 = generator(
                 noise2, training=True)
             pred_fake2 = discriminator(
