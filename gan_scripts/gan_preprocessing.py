@@ -67,7 +67,6 @@ def add_baseline_wander(ecg_signal, fs, amplitude=0.1, frequency=0.5):
     t = np.arange(length) / fs
     wander = amplitude * np.sin(2 * np.pi * frequency * t)
 
-    # If multi-lead, broadcast the wander across leads
     if ecg_signal.ndim == 2:
         wander = wander[:, np.newaxis]
     return ecg_signal + wander
@@ -80,7 +79,6 @@ def time_stretch(ecg_signal, stretch_factor=1.0):
     """
     length = ecg_signal.shape[0]
     new_length = int(length * stretch_factor)
-    # Use resample from scipy.signal
     if ecg_signal.ndim == 1:
         stretched = resample(ecg_signal, new_length)
     else:
@@ -102,28 +100,20 @@ def augment_ecg(ecg_signal, fs,
     ecg_signal: (length,) or (length, n_leads)
     fs: sampling frequency
     """
-    # 1) Random amplitude scaling
     ecg_signal = random_amplitude_scale(
         ecg_signal, scale_range=amp_scale_range)
 
-    # 2) Add gaussian noise
     noise_std = np.random.uniform(*noise_std_range)
     ecg_signal = add_gaussian_noise(ecg_signal, noise_std=noise_std)
 
-    # 3) Optional: Baseline wander
     if apply_baseline_wander:
         freq = np.random.uniform(0.1, 0.5)  # random frequency
         amp = np.random.uniform(0.01, 0.1)  # random amplitude
         ecg_signal = add_baseline_wander(
             ecg_signal, fs=fs, amplitude=amp, frequency=freq)
 
-    # 4) Time stretch
     stretch_factor = np.random.uniform(*stretch_range)
     ecg_signal = time_stretch(ecg_signal, stretch_factor=stretch_factor)
-
-    # 5) Re-crop or pad so final length is consistent (if needed)
-    # e.g., if your model expects exactly 'target_len' samples
-    # ecg_signal = recrop_or_pad(ecg_signal, target_len)
 
     return ecg_signal
 
