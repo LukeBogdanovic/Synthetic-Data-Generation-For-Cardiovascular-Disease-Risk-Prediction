@@ -1,10 +1,8 @@
 import os
 import wfdb
-import rlign
 import numpy as np
 import pandas as pd
 from scipy import signal
-from wfdb import processing
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 
@@ -37,85 +35,6 @@ ECG_names = [name for name in ECG_names if not any(
     exclude in name for exclude in ['02076', '02089', '02148', '02152'])]
 scaler = StandardScaler()
 all_ecgs = []
-
-
-def add_gaussian_noise(ecg_signal, noise_std=0.01):
-    """
-    ecg_signal: shape (length,) or (length, n_leads)
-    noise_std: std of the Gaussian noise relative to the signal amplitude
-    """
-    noise = np.random.normal(0, noise_std, ecg_signal.shape)
-    return ecg_signal + noise
-
-
-def random_amplitude_scale(ecg_signal, scale_range=(0.8, 1.2)):
-    """
-    scale_range: (min_scale, max_scale)
-    """
-    scale_factor = np.random.uniform(*scale_range)
-    return ecg_signal * scale_factor
-
-
-def add_baseline_wander(ecg_signal, fs, amplitude=0.1, frequency=0.5):
-    """
-    ecg_signal: shape (length,) or (length, n_leads)
-    fs: sampling frequency
-    amplitude: amplitude of the wander
-    frequency: frequency of the sinusoidal drift, e.g., 0.2-0.5 Hz for respiration
-    """
-    length = ecg_signal.shape[0]
-    t = np.arange(length) / fs
-    wander = amplitude * np.sin(2 * np.pi * frequency * t)
-
-    if ecg_signal.ndim == 2:
-        wander = wander[:, np.newaxis]
-    return ecg_signal + wander
-
-
-def time_stretch(ecg_signal, stretch_factor=1.0):
-    """
-    ecg_signal: shape (length,) or (length, n_leads)
-    stretch_factor: > 1 means 'longer' in time, < 1 means 'shorter'
-    """
-    length = ecg_signal.shape[0]
-    new_length = int(length * stretch_factor)
-    if ecg_signal.ndim == 1:
-        stretched = resample(ecg_signal, new_length)
-    else:
-        # multi-lead
-        stretched = []
-        for lead_idx in range(ecg_signal.shape[1]):
-            stretched_lead = resample(ecg_signal[:, lead_idx], new_length)
-            stretched.append(stretched_lead)
-        stretched = np.stack(stretched, axis=1)
-    return stretched
-
-
-def augment_ecg(ecg_signal, fs,
-                noise_std_range=(0.005, 0.02),
-                amp_scale_range=(0.8, 1.2),
-                stretch_range=(0.9, 1.1),
-                apply_baseline_wander=True):
-    """
-    ecg_signal: (length,) or (length, n_leads)
-    fs: sampling frequency
-    """
-    ecg_signal = random_amplitude_scale(
-        ecg_signal, scale_range=amp_scale_range)
-
-    noise_std = np.random.uniform(*noise_std_range)
-    ecg_signal = add_gaussian_noise(ecg_signal, noise_std=noise_std)
-
-    if apply_baseline_wander:
-        freq = np.random.uniform(0.1, 0.5)  # random frequency
-        amp = np.random.uniform(0.01, 0.1)  # random amplitude
-        ecg_signal = add_baseline_wander(
-            ecg_signal, fs=fs, amplitude=amp, frequency=freq)
-
-    stretch_factor = np.random.uniform(*stretch_range)
-    ecg_signal = time_stretch(ecg_signal, stretch_factor=stretch_factor)
-
-    return ecg_signal
 
 
 def downsample_ecg(ecg, samples=128):
@@ -156,8 +75,6 @@ def __load_ecg_data(filename, segment_length=5, include_all=True):
     data = np.asarray(x.p_signal, dtype=np.float64)
     print(data.shape)
     fs = x.fs
-    normalizer = rlign.Rlign(
-        scale_method='hrc', sampling_rate=fs, seconds_len=60)
     print(normalizer)
     ecg_aligned = normalizer.transform(data[np.newaxis, :, :])
     # r_peaks = processing.xqrs_detect(sig=data[:, 0], fs=fs)
