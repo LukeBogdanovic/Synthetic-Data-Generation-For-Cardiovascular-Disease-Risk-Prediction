@@ -1,11 +1,37 @@
-import numpy as np
 import tensorflow as tf
-import matplotlib.pyplot as plt
+import numpy as np
+import os
 from keras import Input, Model
 from keras.api.losses import BinaryCrossentropy
 from keras.api.optimizers import Adam
-from keras.api.layers import Bidirectional, TimeDistributed, LSTM, Dense, Flatten, Conv1D, Reshape, Dropout, MaxPool1D
-from gan_pretrain_preprocessing import normalized_data, m_scaler, reverse_ecg_normalization
+from keras.api.layers import Bidirectional, TimeDistributed, LSTM, Dense, Flatten, Conv1D, Reshape, Dropout, MaxPool1D, BatchNormalization, LeakyReLU
+import matplotlib.pyplot as plt
+from gan_pretrain_preprocessing import reverse_ecg_normalization, normalize_ecg
+from sklearn.preprocessing import MinMaxScaler
+
+gpus = tf.config.list_physical_devices('GPU')
+if gpus:
+    try:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+    except RuntimeError as e:
+        print(e)
+
+if os.path.exists("normalized_ecg.npy"):
+    data = np.load("normalized_ecg.npy", allow_pickle=True)
+    n_records = len(data)
+    subset_size = 10000
+    indices_all = np.arange(n_records)
+    indices = np.random.choice(indices_all, subset_size, replace=False)
+    subset_ecg_dataset = [data[i] for i in indices]
+    m_scaler = MinMaxScaler(feature_range=(-1, 1)
+                            ).fit(np.vstack(subset_ecg_dataset))
+    normalized_data = []
+    for ecg in subset_ecg_dataset:
+        ecg_normalized = normalize_ecg(ecg, m_scaler)
+        normalized_data.append(ecg_normalized)
+else:
+    from gan_pretrain_preprocessing import normalized_data
 
 
 def build_generator_unconditional(ecg_length=128, n_leads=3, latent_dim=100) -> Model:
@@ -33,10 +59,10 @@ def build_generator_unconditional(ecg_length=128, n_leads=3, latent_dim=100) -> 
 
 def build_discriminator(ecg_length=128, n_leads=3) -> Model:
     ecg_input = Input(shape=(ecg_length, n_leads), name='ecg_input')
-    x_ecg = Conv1D(filters=32, kernel_size=5, strides=2,
+    x_ecg = Conv1D(filters=16, kernel_size=5, strides=2,
                    padding='same', activation='relu')(ecg_input)
     x_ecg = MaxPool1D(pool_size=2)(x_ecg)
-    x_ecg = Conv1D(filters=64, kernel_size=5, strides=2, padding='same')(x_ecg)
+    x_ecg = Conv1D(filters=32, kernel_size=5, strides=2, padding='same')(x_ecg)
     x_ecg = MaxPool1D(pool_size=2)(x_ecg)
     x_ecg = Flatten()(x_ecg)
     x = Dense(64, activation='relu')(x_ecg)
@@ -61,8 +87,8 @@ def train_gan(generator, discriminator, dataset, g_optimizer: Adam, d_optimizer:
         with tf.GradientTape(persistent=True) as d_tape:
             pred_real = discriminator(real_ecg, training=True)
             pred_fake = discriminator(fake_ecg, training=True)
-            d_loss_real = bce_loss(tf.ones_like(pred_real), pred_real)
-            d_loss_fake = bce_loss(tf.zeros_like(pred_fake), pred_fake)
+            d_loss_real = bce_loss(tf.ones_like(pred_real)*0.9, pred_real)
+            d_loss_fake = bce_loss(tf.zeros_like(pred_fake)*0.1, pred_fake)
             d_loss = d_loss_real + d_loss_fake
         d_grads = d_tape.gradient(d_loss, discriminator.trainable_variables)
         d_optimizer.apply_gradients(
@@ -108,16 +134,17 @@ def train_gan(generator, discriminator, dataset, g_optimizer: Adam, d_optimizer:
     Model.save(discriminator, f"gan_scripts/gan/discriminator3.keras")
 
 
-BATCH_SIZE = 32
+BATCH_SIZE = 24
 dataset = tf.data.Dataset.from_tensor_slices((normalized_data))
-dataset = dataset.shuffle(len(normalized_data)).batch(
-    BATCH_SIZE, drop_remainder=True)
+dataset = dataset.shuffle(buffer_size=1000)
+dataset = dataset.batch(BATCH_SIZE, drop_remainder=True)
+dataset = dataset.prefetch(tf.data.AUTOTUNE)
 
 
 latent_dim = 100
 generator = build_generator_unconditional(
-    ecg_length=128*10, n_leads=3, latent_dim=latent_dim)
-discriminator = build_discriminator(ecg_length=128*10, n_leads=3)
+    ecg_length=128*5, n_leads=3, latent_dim=latent_dim)
+discriminator = build_discriminator(ecg_length=128*5, n_leads=3)
 gen_optimizer = Adam(learning_rate=1e-4, beta_1=0.5)
 disc_optimizer = Adam(learning_rate=5e-5, beta_1=0.5)
 
@@ -145,7 +172,7 @@ train_gan(
     dataset=dataset,
     g_optimizer=gen_optimizer,
     d_optimizer=disc_optimizer,
-    epochs=150,
+    epochs=50,
     latent_dim=latent_dim,
     checkpoint_manager=checkpoint_manager
 )

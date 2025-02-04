@@ -47,13 +47,6 @@ def read_record(df, sampling_rate, path: str):
     return data
 
 
-Y = pd.read_csv(pretrain_path+'/ptbxl_database.csv', index_col='ecg_id')
-Y.scp_codes = Y.scp_codes.apply(lambda x: ast.literal_eval(x))
-
-X = read_record(Y, 100, pretrain_path)
-print(f"Number of records loaded: {len(X)}")
-
-
 def process_record(record, fs_target=128):
     signal = record.d_signal
     s_min = np.min(signal)
@@ -64,29 +57,32 @@ def process_record(record, fs_target=128):
     signal_uint8 = np.round(signal_scaled).astype(np.uint8)
     signal_int8 = signal_uint8.astype(np.int16) - 128
     signal_int8 = np.clip(signal_int8, -128, 127).astype(np.int8)
-    signal_resampled = resample(signal_int8, fs_target*10)
+    signal_resampled = resample(signal_int8, fs_target*5)
     return signal_resampled
-
-
-processed_signals = []
-for idx, rec in enumerate(X):
-    processed = process_record(rec, fs_target)
-    processed_signals.append(processed)
-
-processed_signals_array = np.array(processed_signals)
-m_scaler = MinMaxScaler(feature_range=(-1, 1)
-                        ).fit(np.vstack(processed_signals_array))
 
 
 def normalize_ecg(ecg, s_scaler: MinMaxScaler):
     return s_scaler.transform(ecg)
 
 
-normalized_data = []
-for ecg in processed_signals_array:
-    ecg_normalized = normalize_ecg(ecg, m_scaler)
-    normalized_data.append(ecg_normalized)
-
-
 def reverse_ecg_normalization(normalized_ecg, scaler: MinMaxScaler):
     return scaler.inverse_transform(normalized_ecg)
+
+
+def get_normalized_values():
+    Y = pd.read_csv(pretrain_path+'/ptbxl_database.csv', index_col='ecg_id')
+    Y.scp_codes = Y.scp_codes.apply(lambda x: ast.literal_eval(x))
+
+    X = read_record(Y, 100, pretrain_path)
+    print(f"Number of records loaded: {len(X)}")
+    processed_signals = []
+    for idx, rec in enumerate(X):
+        processed = process_record(rec, fs_target)
+        processed_signals.append(processed)
+
+    processed_signals_array = np.array(processed_signals)
+
+    np.save("normalized_ecg.npy", processed_signals_array)
+
+
+# get_normalized_values()
