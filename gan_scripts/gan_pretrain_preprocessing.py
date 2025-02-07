@@ -57,7 +57,7 @@ def process_record(record, fs_target=128):
     signal_uint8 = np.round(signal_scaled).astype(np.uint8)
     signal_int8 = signal_uint8.astype(np.int16) - 128
     signal_int8 = np.clip(signal_int8, -128, 127).astype(np.int8)
-    signal_resampled = resample(signal_int8, fs_target*5)
+    signal_resampled = resample(signal_int8, fs_target*10)
     return signal_resampled
 
 
