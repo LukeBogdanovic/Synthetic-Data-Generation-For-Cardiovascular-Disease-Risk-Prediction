@@ -3,7 +3,7 @@ import os
 import numpy as np
 import pandas as pd
 import ast
-from scipy.signal import resample
+from scipy.signal import resample, filtfilt, butter
 from sklearn.preprocessing import MinMaxScaler
 
 fs_target = 128
@@ -47,17 +47,19 @@ def read_record(df, sampling_rate, path: str):
     return data
 
 
-def process_record(record, fs_target=128):
-    signal = record.d_signal
-    s_min = np.min(signal)
-    s_max = np.max(signal)
+def process_record(record, fs_target=128, num_seconds=5, lowcut=0.5, highcut=40):
+    signal = record.d_signal.astype(np.float32)
+    filtered_signal = bandpass_filter(
+        signal, lowcut, highcut, record.fs, order=3)
+    s_min = np.min(filtered_signal)
+    s_max = np.max(filtered_signal)
     if np.abs(s_max - s_min) < 1e-8:
         s_max = s_min + 1e-8
-    signal_scaled = (signal - s_min) / (s_max - s_min) * 255.0
+    signal_scaled = (filtered_signal - s_min) / (s_max - s_min) * 255.0
     signal_uint8 = np.round(signal_scaled).astype(np.uint8)
     signal_int8 = signal_uint8.astype(np.int16) - 128
     signal_int8 = np.clip(signal_int8, -128, 127).astype(np.int8)
-    signal_resampled = resample(signal_int8, fs_target*10)
+    signal_resampled = resample(signal_int8, fs_target*num_seconds)
     return signal_resampled
 
 
@@ -83,6 +85,15 @@ def get_normalized_values():
     processed_signals_array = np.array(processed_signals)
 
     np.save("normalized_ecg.npy", processed_signals_array)
+
+
+def bandpass_filter(signal, lowcut, highcut, fs, order=3):
+    nyquist = 0.5 * fs
+    low = lowcut / nyquist
+    high = highcut / nyquist
+    b, a = butter(order, [low, high], btype='band')
+    filtered_signal = filtfilt(b, a, signal, axis=0)
+    return filtered_signal
 
 
 # get_normalized_values()

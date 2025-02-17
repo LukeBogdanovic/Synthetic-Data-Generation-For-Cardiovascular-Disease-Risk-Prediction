@@ -18,7 +18,7 @@ m_scaler = MinMaxScaler(feature_range=(-1, 1)
 # seconds_to_generate = 60
 Leads = ['III', 'V3', 'V5']
 
-model: Model = load_model(f"{Model_path}/generator3.keras")
+model: Model = load_model(f"{Model_path}/generator5.keras")
 noise = np.random.normal(0, 1, (1, 100))
 gen_ecgs = model.predict(noise)
 
