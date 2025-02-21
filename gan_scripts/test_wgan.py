@@ -2,9 +2,9 @@ import os
 import numpy as np
 import tensorflow as tf
 from keras import Input, Model
-from keras.api.optimizers import Adam
+from keras.api.optimizers import Adam, RMSprop
 from sklearn.preprocessing import MinMaxScaler
-from gan_pretrain_preprocessing import reverse_ecg_normalization, normalize_ecg
+from gan_pretrain_preprocessing import reverse_ecg_normalization, normalize_ecg, bandpass_filter
 from keras.api.layers import Bidirectional, TimeDistributed, LSTM, Dense, Flatten, Conv1D, Reshape, Dropout, LeakyReLU, Layer
 from keras.api.metrics import Mean
 from keras.api.saving import register_keras_serializable
@@ -42,8 +42,8 @@ if gpus:
     except RuntimeError as e:
         print(e)
 
-if os.path.exists("normalized_ecg.npy"):
-    data = np.load("normalized_ecg.npy", allow_pickle=True)
+if os.path.exists("normalized_ecg_phys.npy"):
+    data = np.load("normalized_ecg_phys.npy", allow_pickle=True)
     n_records = len(data)
     subset_size = 10000
     indices_all = np.arange(n_records)
@@ -192,7 +192,7 @@ class WGANGP(Model):
     def metrics(self):
         return [self.mmd_metric, self.mvdTW_metric]
 
-    def compile(self, g_optimizer: Adam, c_optimizer: Adam, **kwargs):
+    def compile(self, g_optimizer: Adam, c_optimizer: RMSprop, **kwargs):
         super(WGANGP, self).compile(**kwargs)
         self.g_optimizer = g_optimizer
         self.c_optimizer = c_optimizer
@@ -310,7 +310,7 @@ class MiniBatchDiscrimination(Layer):
 
 
 class SaveGeneratedECG(Callback):
-    def __init__(self, generator, save_path="images/generated_images"):
+    def __init__(self, generator, save_path):
         super(SaveGeneratedECG, self).__init__()
         self.generator = generator
         self.save_path = save_path
@@ -355,14 +355,14 @@ n_critic = 3
 lambda_gp = 10.0  # Gradient penalty
 ecg_length = 128 * num_seconds
 n_leads = 3
+GAN_model_num = 0
 
 generator = build_generator_unconditional(
     ecg_length=ecg_length, n_leads=n_leads, latent_dim=latent_dim)
 critic = build_critic(ecg_length=ecg_length, n_leads=n_leads)
 g_optimizer = Adam(
-    learning_rate=0.0002, beta_1=0.5)
-c_optimizer = Adam(
-    learning_rate=0.0002, beta_1=0.5)
+    learning_rate=1e-4, beta_1=0.0, beta_2=0.9)
+c_optimizer = RMSprop(learning_rate=5e-5)
 
 wgangp = WGANGP(generator, critic, latent_dim=latent_dim,
                 n_critic=n_critic, lambda_gp=lambda_gp)
@@ -371,10 +371,24 @@ wgangp.compile(g_optimizer=g_optimizer,
 
 sample_data = next(iter(dataset))
 
-save_ecg_callback = SaveGeneratedECG(wgangp.generator)
+while os.path.exists(f"images/generated_images_wgan{GAN_model_num}"):
+    GAN_model_num += 1
+image_path = f"images/generated_images_wgan{GAN_model_num}"
+os.makedirs(image_path)
+
+save_ecg_callback = SaveGeneratedECG(wgangp.generator, image_path)
+
+GAN_model_num = 0
 
 wgangp.build(input_shape=(None, ecg_length, n_leads))
 
 wgangp.fit(dataset, epochs=100, callbacks=[save_ecg_callback])
 
-wgangp.save("gan_scripts/gan/wgan.keras")
+while os.path.exists(f"gan_scripts/gan/WGAN_models/wgan_{GAN_model_num}"):
+    GAN_model_num += 1
+os.makedirs(f"gan_scripts/gan/WGAN_models/wgan_{GAN_model_num}")
+wgangp.save(f"gan_scripts/gan/WGAN_models/wgan_{GAN_model_num}/wgan.keras")
+wgangp.generator.save(
+    f"gan_scripts/gan/WGAN_models/wgan_{GAN_model_num}/generator.keras")
+wgangp.critic.save(
+    f"gan_scripts/gan/WGAN_models/wgan_{GAN_model_num}/critic.keras")

@@ -8,6 +8,7 @@
 /lib64
 pyvenv.cfg
 /share
-normalized_ecg.npy
+*.npy
 /images
-gan_scripts/gan/wgan.keras
+gan_scripts/gan/GAN_models
+gan_scripts/gan/WGAN_models
