@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
-from gan_pretrain_preprocessing import bandpass_filter, reverse_ecg_normalization, normalize_ecg
+from gan_scripts.non_use_gans.gan_pretrain_preprocessing import bandpass_filter, reverse_ecg_normalization, normalize_ecg
 import os
 import numpy as np
 from sklearn.preprocessing import MinMaxScaler
@@ -23,7 +23,7 @@ if os.path.exists("normalized_ecg_phys.npy"):
     normalized_data = [normalize_ecg(ecg, m_scaler)
                        for ecg in subset_ecg_dataset]
 else:
-    from gan_pretrain_preprocessing import normalized_data
+    from gan_scripts.non_use_gans.gan_pretrain_preprocessing import normalized_data
     # Assume m_scaler is defined in that module
 
 
