@@ -9,6 +9,7 @@
 pyvenv.cfg
 /share
 *.npy
+data/pretrain/records500
 /images/WGAN_images/generated_images_wgan0
 /images/WGAN_images/generated_images_wgan1
 /images/WGAN_images/generated_images_wgan2
@@ -36,3 +37,13 @@ gan_scripts/gan/WGAN_models/wgan_8
 gan_scripts/gan/WGAN_models/wgan_9
 gan_scripts/gan/WGAN_models/wgan_10
 gan_scripts/gan/WGAN_models/wgan_11
+gan_scripts/gan/CWGAN_models/Prev_Pretrained/CWGAN.pth
+gan_scripts/gan/WGAN_models/Prev_pretrain/CWGAN.pth
+synth_datasets/0.0139_real_synth_dataset.pth
+synth_datasets/0.75_real_synth_dataset.pth
+.gitignore
+synth_datasets/0.25_real_synth_dataset.pth
+synth_datasets/0.025_real_synth_dataset.pth
+synth_datasets/0.05_real_synth_dataset.pth
+synth_datasets/0.1_real_synth_dataset.pth
+Data_augmentation/TVAE_model.pkl
