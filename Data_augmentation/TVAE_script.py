@@ -26,9 +26,9 @@ df.head()
 metadata = SingleTableMetadata()
 metadata.detect_from_dataframe(df)  # Detect metadata from the dataframe
 model = TVAESynthesizer(metadata=metadata, epochs=3000,
-                        cuda=True, verbose=True)  # Create TVAE model
+                        cuda=False, verbose=True)  # Create TVAE model
 model.fit(df)  # Fit the data
-model.save("TVAE_model.pkl")  # Save the model
+model.save("TVAE_model_cpu.pkl")  # Save the model
 synthetic_crfs = model.sample(421)  # Sample data points
 synthetic_crfs.to_csv("synthetic_crfs.csv", index=False)  # Save CRFs to file
 
