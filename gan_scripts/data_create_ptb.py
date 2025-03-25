@@ -8,7 +8,7 @@ import pandas as pd
 import wfdb
 import numpy as np
 from scipy.signal import resample
-from gan_scripts.preprocessing_utils import bandpass_filter, extract_centered_segment_ptb
+from preprocessing_utils import bandpass_filter, extract_centered_segment_ptb
 import ast
 import os
 

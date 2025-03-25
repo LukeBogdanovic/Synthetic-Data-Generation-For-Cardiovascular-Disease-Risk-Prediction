@@ -5,7 +5,7 @@
 :Purpose: Creates dataset for training the CWGAN using the SHAREEDB dataset
 '''
 import wfdb.processing
-from gan_scripts.preprocessing_utils import bandpass_filter
+from preprocessing_utils import bandpass_filter
 import wfdb
 import numpy as np
 from pathlib import Path

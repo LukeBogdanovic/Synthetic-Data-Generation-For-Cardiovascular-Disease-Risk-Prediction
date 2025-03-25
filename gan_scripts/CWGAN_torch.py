@@ -15,11 +15,11 @@ from torch.utils.data import DataLoader, TensorDataset
 from torch.nn.utils import spectral_norm
 import torch.optim as optim
 import pynvml
-from gan_scripts.preprocessing_utils import per_lead_minmax_scaling, save_generated_ecg, compute_mmd, compute_mvdTW, gradient_penalty
+from preprocessing_utils import per_lead_minmax_scaling, save_generated_ecg, compute_mmd, compute_mvdTW, gradient_penalty
 
 # Calls setup for metrics functions from C
 # Load the C Library for the metrics functions
-metric_lib = ctypes.CDLL("c_funcs/dtw.so")
+metric_lib = ctypes.CDLL("./c_funcs/dtw.so")
 # Set the arguments types for the dtw_distance function
 metric_lib.dtw_distance.argtypes = [
     ctypes.POINTER(ctypes.c_double),

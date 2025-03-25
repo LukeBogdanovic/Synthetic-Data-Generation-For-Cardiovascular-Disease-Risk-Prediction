@@ -10,7 +10,7 @@ import random
 from sdv.single_table import TVAESynthesizer
 from sdv.metadata import SingleTableMetadata
 import torch
-from gan_scripts.CWGAN_torch import Generator
+from CWGAN_torch import Generator
 from torch.utils.data import TensorDataset, Subset, DataLoader
 from sklearn.model_selection import train_test_split
 

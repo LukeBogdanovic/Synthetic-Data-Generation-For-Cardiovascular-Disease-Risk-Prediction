@@ -32,7 +32,7 @@ generator = Generator(ecg_length=ecg_length,
 device = torch.device("cuda" if torch.cuda.is_available()
                       else "cpu")  # Select the device to run model on
 cwgan = torch.load(
-    "gan_scripts/gan/CWGAN_models/pretrained/CWGAN.pth", map_location=device, weights_only=False)  # Load the pytorch model file
+    "gan/CWGAN_models/pretrained/CWGAN.pth", map_location=device, weights_only=False)  # Load the pytorch model file
 # Load the weights for the model
 generator.load_state_dict(cwgan['generator_state_dict'])
 generator.to(device)  # Send generator to chosen device
