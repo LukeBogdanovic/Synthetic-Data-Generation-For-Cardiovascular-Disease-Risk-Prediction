@@ -42,8 +42,7 @@ class Generator(nn.Module):
         layers = []
         for cin, cout, sf in zip(chs[:-1], chs[1:], ups_factors):
             layers += [
-                nn.Upsample(scale_factor=sf, mode='linear',
-                            align_corners=False),
+                nn.Upsample(scale_factor=sf, mode='nearest'),
                 nn.Conv1d(cin, cout, kernel_size=3, padding=1, bias=False),
                 nn.BatchNorm1d(cout),
                 nn.ReLU(inplace=True),
@@ -77,18 +76,46 @@ class Generator(nn.Module):
         return x.transpose(1, 2)
 
 
+class BlurPool1D(nn.Module):
+    def __init__(self, channels):
+        super().__init__()
+        k = torch.tensor([1, 4, 6, 4, 1], dtype=torch.float32)
+        k = (k/k.sum()).view(1, 1, -1)
+        self.register_buffer('filt', k)
+        self.channels = channels
+        self.pad = 2
+
+    def forward(self, x):
+        w = self.filt.repeat(self.channels, 1, 1)
+        x = F.conv1d(x, w, stride=1, padding=self.pad, groups=self.channels)
+        return x[:, :, ::2]
+
+
 class Critic(nn.Module):
     def __init__(self, ecg_length=640, n_leads=3, base=64):
         super().__init__()
         chs = [n_leads, base, 96, 128, 192, 256, 384, 512]
         blocks = []
-        for cin, cout in zip(chs[:-1], chs[1:]):
+        for idx, (cin, cout) in enumerate(zip(chs[:-1], chs[1:])):
+            k = 5 if idx < 3 else 3
             blocks += [
-                nn.Conv1d(cin, cout, kernel_size=4, stride=2, padding=1),
-                nn.LeakyReLU(0.2, inplace=True)
+                nn.Conv1d(cin, cout, kernel_size=k,
+                          stride=1, padding=k//2, bias=True),
+                nn.LeakyReLU(0.2, inplace=True),
+                BlurPool1D(cout)
             ]
         self.net = nn.Sequential(*blocks)
         self.head = nn.Linear(cout, 1)
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv1d):
+                nn.init.kaiming_normal_(m.weight, a=0.2)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, a=0.2)
+                nn.init.zeros_(m.bias)
 
     def forward(self, x):
         x = x.transpose(1, 2)  # (B, C, L)
@@ -237,15 +264,14 @@ def main():
     # Convert the numpy array to a torch tensor
     dataset_tensor = torch.tensor(normalized_data, dtype=torch.float32)
     dataloader = DataLoader(TensorDataset(dataset_tensor),
-                            batch_size=BATCH_SIZE, shuffle=True, drop_last=False)
+                            batch_size=BATCH_SIZE, shuffle=True, drop_last=True)
     # Set GPU device availability
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     num_epochs = 50  # Number of epochs
-    n_critic = 2  # Number of times critic is trained (default=5)
-    lambda_gp = 5.0  # Gradient penalty modifier hyperparameter (default=10.0)
+    n_critic = 5  # Number of times critic is trained (default=5)
+    lambda_gp = 10.0  # Gradient penalty modifier hyperparameter (default=10.0)
     # Dynamic time warping modifier hyperparameter (default=0.1)
     lambda_dtw = 0.05
-    lambda_mmd = 0.1
     GAN_model_num = 0
     generator = Generator(ecg_length=ecg_length, n_leads=n_leads,
                           latent_dim=latent_dim).to(device)  # Create Generator model and send to GPU
