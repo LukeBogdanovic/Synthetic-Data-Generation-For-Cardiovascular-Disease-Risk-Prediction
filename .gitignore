@@ -23,3 +23,4 @@ synth_datasets/0.1_real_synth_dataset.pth
 Data_augmentation/TVAE_model.pkl
 gan_scripts/c_funcs/dtw.so
 gan_scripts/c_funcs/dtw.o
+*.png

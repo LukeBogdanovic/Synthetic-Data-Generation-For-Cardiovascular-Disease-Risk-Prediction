@@ -351,7 +351,6 @@ def gradient_penalty(critic, real_samples, fake_samples, device, labels=None):
     batch_size = real_samples.size(0)  # Get batch size
     # Generate random interpolation coefficient to ensure per-sample weighting
     epsilon = torch.rand(batch_size, 1, 1, device=device)
-    epsilon = epsilon.expand_as(real_samples)
     # Computes interpolated samples: Create new samples between real and fake distributions
     interpolates = epsilon * real_samples + \
         (1 - epsilon) * fake_samples.detach()
@@ -371,6 +370,7 @@ def gradient_penalty(critic, real_samples, fake_samples, device, labels=None):
         grad_outputs=grad_outputs,  # Gradient of output
         create_graph=True,
         retain_graph=True,
+        only_inputs=True  # compute only for the inputs
     )[0]
     # Flatten gradients per sample for computation of norms
     gradients = gradients.reshape(batch_size, -1)
