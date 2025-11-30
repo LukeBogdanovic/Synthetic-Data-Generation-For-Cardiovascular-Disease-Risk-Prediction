@@ -24,3 +24,4 @@ Data_augmentation/TVAE_model.pkl
 gan_scripts/c_funcs/dtw.so
 gan_scripts/c_funcs/dtw.o
 *.png
+.venv
