@@ -17,6 +17,26 @@ n_leads = 3
 BATCH_SIZE = 128
 
 
+class DeconvBlock1D(nn.Module):
+    def __init__(self, in_ch, out_ch):
+        super().__init__()
+        self.deconv = nn.ConvTranspose1d(
+            in_ch, out_ch,
+            kernel_size=4,
+            stride=2,
+            padding=1,
+            bias=False
+        )
+        self.norm = nn.InstanceNorm1d(out_ch, affine=True)
+        self.act = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        x = self.deconv(x)
+        x = self.norm(x)
+        x = self.act(x)
+        return x
+
+
 class Generator(nn.Module):
     """
     Generator using ConvTranspose1d.
@@ -29,62 +49,31 @@ class Generator(nn.Module):
         ecg_length: int = 640,
         n_leads: int = 3,
         latent_dim: int = 128,
-        L0: int = 10,
+        L0: int = 5,
         ch0: int = 256,
-        ups_factors=(2, 2, 2, 2, 2, 2),
-        ch_min: int = 32,
     ):
         super().__init__()
+
+        assert L0 * \
+            (2 **
+             7) == ecg_length, f"L0 * 2^7 must equal ECG_length {ecg_length}"
         self.ecg_length = ecg_length
         self.n_leads = n_leads
         self.latent_dim = latent_dim
         self.L0 = L0
 
-        # Check upsampling factor product
-        prod = 1
-        for f in ups_factors:
-            prod *= f
-
-        if L0 * prod != ecg_length:
-            raise ValueError(f"L0*product(ups_factors) must equal ecg_length. "
-                             f"{L0 * prod} != {ecg_length}")
-
-        # latent → (ch0, L0)
-        self.fc = nn.Linear(latent_dim, ch0 * L0)
-
-        # channel schedule (taper downward each upsample)
-        chs = [ch0]
-        c = ch0
-        for _ in ups_factors:
-            c = max(c // 2, ch_min)
-            chs.append(c)
-
-        # ConvTranspose1d blocks
+        self.fc = nn.Linear(latent_dim, ch0*L0)
+        chs = [ch0, 192, 128, 96, 64, 48, 32, 16]
         blocks = []
         for cin, cout in zip(chs[:-1], chs[1:]):
-            blocks += [
-                nn.ConvTranspose1d(
-                    cin,
-                    cout,
-                    kernel_size=5,      # good default for ×2 upsampling
-                    stride=2,
-                    padding=2,
-                    output_padding=1
-                ),
-                nn.BatchNorm1d(cout),
-                nn.ReLU(inplace=True),
-            ]
-
+            blocks.append(DeconvBlock1D(cin, cout))
         self.deconv = nn.Sequential(*blocks)
 
-        # Final mixing + output projection
         self.head = nn.Sequential(
-            nn.Conv1d(chs[-1], 64, kernel_size=9, padding=4),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv1d(64, 32, kernel_size=9, padding=4),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv1d(32, n_leads, kernel_size=9, padding=4),
-            nn.Tanh(),
+            nn.Conv1d(chs[-1], 32, kernel_size=15, padding=7, bias=True),
+            nn.ReLU(inplace=True),
+            nn.Conv1d(32, n_leads, kernel_size=7, padding=3, bias=True),
+            nn.Tanh()
         )
 
         self._init_weights()
@@ -95,7 +84,7 @@ class Generator(nn.Module):
                 nn.init.xavier_uniform_(m.weight)
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
-            elif isinstance(m, nn.BatchNorm1d):
+            elif isinstance(m, nn.InstanceNorm1d):
                 nn.init.ones_(m.weight)
                 nn.init.zeros_(m.bias)
 
@@ -111,53 +100,63 @@ class Generator(nn.Module):
 
 
 class Critic(nn.Module):
-    def __init__(self, ecg_length=640, n_leads=3):
+    def __init__(self, ecg_length=640, n_leads=3, base_ch=64):
         super().__init__()
         self.ecg_length = ecg_length
         self.n_leads = n_leads
+        layers = []
+        in_ch = n_leads
+        chs = [base_ch, base_ch*2, base_ch*4, base_ch*4, base_ch*8]
+        for i, out_ch in enumerate(chs):
+            if i == 0:
+                k1 = 15
+            elif i == 1:
+                k1 = 11
+            else:
+                k1 = 7
 
-        def conv_block(cin, cout, k, s=2):
-            pad = (k - 1) // 2
-            return nn.Sequential(
-                nn.Conv1d(cin, cout, kernel_size=k, stride=s, padding=pad),
+            layers += [
+                nn.Conv1d(in_ch, out_ch, kernel_size=k1,
+                          stride=2, padding=k1//2),
                 nn.LeakyReLU(0.2, inplace=True),
-            )
+            ]
 
-        # 640 → 320 → 160 → 80 → 40 → 20
-        self.net = nn.Sequential(
-            conv_block(n_leads, 64, k=5, s=2),   # 640 -> 320
-            conv_block(64, 96, k=5, s=2),        # 320 -> 160
-            conv_block(96, 128, k=7, s=2),       # 160 -> 80
-            conv_block(128, 192, k=7, s=2),      # 80 -> 40
-            conv_block(192, 256, k=7, s=2),      # 40 -> 20
-        )
-
+            # Second conv in stage: refine features (no further downsample)
+            k2 = 3
+            layers += [
+                nn.Conv1d(out_ch, out_ch, kernel_size=k2,
+                          stride=1, padding=k2//2),
+                nn.LeakyReLU(0.2, inplace=True),
+            ]
+            in_ch = out_ch
+        self.net = nn.Sequential(*layers)
         self.global_pool = nn.AdaptiveAvgPool1d(1)
+        self.head = nn.Linear(in_ch, 1)
 
-        with torch.no_grad():
-            dummy = torch.zeros(1, n_leads, ecg_length)
-            feat = self.global_pool(self.net(dummy))  # (1, C, 1)
-            self.flatten_dim = feat.view(1, -1).size(1)
+        self._init_weights()
 
-        self.head = nn.Linear(self.flatten_dim, 1)
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv1d):
+                nn.init.kaiming_normal_(
+                    m.weight, a=0.2, nonlinearity='leaky_relu')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                nn.init.zeros_(m.bias)
 
-    def forward(self, ecg: torch.Tensor) -> torch.Tensor:
-        """
-        ecg: (B, 640, 3) or (B, 3, 640)
-        returns: (B, 1) WGAN score
-        """
-        if ecg.dim() != 3:
-            raise ValueError(f"Expected 3D input, got {ecg.shape}")
-
-        # If (B, 640, 3), transpose to (B, 3, 640)
-        if ecg.shape[1] == self.ecg_length and ecg.shape[2] == self.n_leads:
-            ecg = ecg.permute(0, 2, 1)
-
-        x = self.net(ecg)                   # (B, 256, 20)
-        x = self.global_pool(x)             # (B, 256, 1)
-        x = x.view(x.size(0), -1)           # (B, 256)
-        x = self.head(x)                    # (B, 1)
-        return x
+    def forward(self, x):
+        # Accept (B, L, C) or (B, C, L)
+        if x.dim() != 3:
+            raise ValueError(f"Expected 3D input, got {x.shape}")
+        if x.shape[1] == self.ecg_length and x.shape[2] == self.n_leads:
+            x = x.permute(0, 2, 1)  # (B, C, L)
+        h = self.net(x)           # (B, C', ~20-ish)
+        h = self.global_pool(h)   # (B, C', 1)
+        h = h.squeeze(-1)         # (B, C')
+        out = self.head(h)        # (B, 1)
+        return out
 
 
 def flatten_ecg(x):

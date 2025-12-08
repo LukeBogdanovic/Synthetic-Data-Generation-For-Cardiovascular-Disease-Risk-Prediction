@@ -12,35 +12,11 @@ from tslearn.metrics import SoftDTWLossPyTorch as SoftDTW
 from ignite.metrics import MaximumMeanDiscrepancy as MMD
 import torch
 import torch.nn as nn
-from torch.nn.utils import spectral_norm
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
-from preprocessing_utils import per_lead_minmax_scaling, save_generated_ecg, compute_mmd, compute_mvdTW, gradient_penalty
+from preprocessing_utils import per_lead_minmax_scaling, save_generated_ecg, gradient_penalty
 import pynvml
-
-# # Calls setup for metrics functions from C
-# # Load the C Library for the metrics functions
-# metric_lib = ctypes.CDLL("c_funcs/dtw.dll")
-# # Set the arguments types for the dtw_distance function
-# metric_lib.dtw_distance.argtypes = [
-#     ctypes.POINTER(ctypes.c_double),
-#     ctypes.POINTER(ctypes.c_double),
-#     ctypes.c_int,
-#     ctypes.c_int,
-#     ctypes.c_int
-# ]
-# # Set return type for the dtw_distance function
-# metric_lib.dtw_distance.restype = ctypes.c_double
-# # Set the arguments types for the compute_mmd C function
-# metric_lib.compute_mmd.argtypes = [ctypes.POINTER(ctypes.c_double),
-#                                    ctypes.POINTER(ctypes.c_double),
-#                                    ctypes.c_int,
-#                                    ctypes.c_int,
-#                                    ctypes.c_int,
-#                                    ctypes.c_double]
-# # Set return type for the compute_mmd function
-# metric_lib.compute_mmd.restype = ctypes.c_double
-
+import torch.nn.functional as F
 
 latent_dim = 100  # Latent space/noise dimension
 num_seconds = 5  # Number of seconds as input
@@ -61,66 +37,202 @@ dataloader = DataLoader(TensorDataset(dataset_tensor),
                         # Create a dataset loader for training the model, shuffles on each epoch
                         batch_size=BATCH_SIZE, shuffle=True, drop_last=True)
 
+# class Generator(nn.Module):
+#     '''
+#     Generator model for the WGAN-GP-DTW model.\\
+#     Consists of an initial CNN block for the extraction of local features,\\
+#     a twin stack of bidirectional LSTMs with 50 hidden units each to model temporal features,\\
+#     and a final CNN block for signal refinement before being output through a tanh activation function.
+#     '''
+
+#     def __init__(self, ecg_length=640, n_leads=3, latent_dim=128,
+#                  seq_len=640, hidden_size=80, num_layers=2, proj_hidden=64):
+#         super().__init__()
+#         assert seq_len == ecg_length, "Here we directly generate full length = ecg_length"
+
+#         self.ecg_length = ecg_length
+#         self.n_leads = n_leads
+#         self.latent_dim = latent_dim
+#         self.seq_len = seq_len
+
+#         # latent -> (seq_len, proj_hidden)
+#         self.fc = nn.Linear(latent_dim, seq_len * proj_hidden)
+#         self.conv = nn.Conv1d()
+#         self.lstm = nn.LSTM(
+#             input_size=proj_hidden,
+#             hidden_size=hidden_size,
+#             num_layers=num_layers,
+#             batch_first=True,
+#             bidirectional=True
+#         )
+
+#         # Map BiLSTM output at each time step to n_leads
+#         self.out_layer = nn.Sequential(
+#             nn.Linear(2 * hidden_size, 64),
+#             nn.ReLU(inplace=True),
+#             nn.Linear(64, n_leads),
+#             nn.Tanh()
+#         )
+
+#         self._init_weights()
+
+#     def _init_weights(self):
+#         for m in self.modules():
+#             if isinstance(m, nn.Linear):
+#                 nn.init.xavier_uniform_(m.weight)
+#                 if getattr(m, "bias", None) is not None:
+#                     nn.init.zeros_(m.bias)
+
+#         # LSTM default init is usually fine; you can tweak if needed.
+
+#     def forward(self, noise):
+#         B = noise.size(0)
+#         # (B, seq_len * proj_hidden)
+#         x = self.fc(noise)
+#         x = x.view(B, self.seq_len, -1)             # (B, seq_len, proj_hidden)
+
+#         x, _ = self.lstm(x)                         # (B, seq_len, 2*hidden)
+#         x = self.out_layer(x)                       # (B, seq_len, n_leads)
+
+#         # Return in (B, 3, 640) format
+#         return x.permute(0, 2, 1)                   # (B, n_leads, seq_len=640)
+
+
+class NoiseInjection(nn.Module):
+    def __init__(self, channels):
+        super().__init__()
+        self.weight = nn.Parameter(torch.zeros(1, channels, 1))
+
+    def forward(self, x, noise=None):
+        if noise is None:
+            noise = torch.randn(x.size(0), 1, x.size(2), device=x.device)
+        return x + self.weight * noise
+
+
+class ResidualBlock1D(nn.Module):
+    def __init__(self, channels, kernel_size=5):
+        super().__init__()
+        pad = (kernel_size - 1) // 2
+        self.conv1 = nn.Conv1d(channels, channels, kernel_size, padding=pad)
+        self.conv2 = nn.Conv1d(channels, channels, kernel_size, padding=pad)
+        self.bn1 = nn.BatchNorm1d(channels)
+        self.bn2 = nn.BatchNorm1d(channels)
+
+    def forward(self, x):
+        residual = x
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = F.relu(out, inplace=True)
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out = out + residual
+        out = F.relu(out, inplace=True)
+        return out
+
 
 class Generator(nn.Module):
-    '''
-    Generator model for the WGAN-GP-DTW model.\\
-    Consists of an initial CNN block for the extraction of local features,\\
-    a twin stack of bidirectional LSTMs with 50 hidden units each to model temporal features,\\
-    and a final CNN block for signal refinement before being output through a tanh activation function.
-    '''
-
-    def __init__(self, ecg_length=640, n_leads=3, latent_dim=128,
-                 seq_len=640, hidden_size=128, num_layers=2, proj_hidden=256):
+    def __init__(
+        self,
+        latent_dim=128,
+        base_len=160,
+        lstm_hidden=64,
+        feat_dim=64,
+    ):
         super().__init__()
-        assert seq_len == ecg_length, "Here we directly generate full length = ecg_length"
 
-        self.ecg_length = ecg_length
-        self.n_leads = n_leads
         self.latent_dim = latent_dim
-        self.seq_len = seq_len
+        self.base_len = base_len
+        self.feat_dim = feat_dim
 
-        # latent -> (seq_len, proj_hidden)
-        self.fc = nn.Linear(latent_dim, seq_len * proj_hidden)
+        self.fc = nn.Linear(latent_dim, base_len * feat_dim)
 
-        self.lstm = nn.LSTM(
-            input_size=proj_hidden,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
+        self.bilstm = nn.LSTM(
+            input_size=feat_dim,
+            hidden_size=lstm_hidden,
+            num_layers=1,
             batch_first=True,
             bidirectional=True
         )
 
-        # Map BiLSTM output at each time step to n_leads
-        self.out_layer = nn.Sequential(
-            nn.Linear(2 * hidden_size, 64),
-            nn.ReLU(inplace=True),
-            nn.Linear(64, n_leads),
-            nn.Tanh()
+        self.conv1 = nn.Conv1d(
+            in_channels=2 * lstm_hidden,  # 128
+            out_channels=128,
+            kernel_size=16,
+            stride=1,
+            padding="same"
         )
+        self.act1 = nn.LeakyReLU(negative_slope=0.3, inplace=True)
 
-        self._init_weights()
+        self.conv2 = nn.Conv1d(
+            in_channels=128,
+            out_channels=64,
+            kernel_size=16,
+            stride=1,
+            padding="same"
+        )
+        self.act2 = nn.LeakyReLU(negative_slope=0.3, inplace=True)
 
-    def _init_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight)
-                if getattr(m, "bias", None) is not None:
-                    nn.init.zeros_(m.bias)
+        self.upsample1 = nn.Upsample(scale_factor=2, mode="nearest")
 
-        # LSTM default init is usually fine; you can tweak if needed.
+        self.conv3 = nn.Conv1d(
+            in_channels=64,
+            out_channels=32,
+            kernel_size=16,
+            stride=1,
+            padding="same"
+        )
+        self.act3 = nn.LeakyReLU(negative_slope=0.3, inplace=True)
 
-    def forward(self, noise):
-        B = noise.size(0)
-        # (B, seq_len * proj_hidden)
-        x = self.fc(noise)
-        x = x.view(B, self.seq_len, -1)             # (B, seq_len, proj_hidden)
+        self.conv4 = nn.Conv1d(
+            in_channels=32,
+            out_channels=16,
+            kernel_size=16,
+            stride=1,
+            padding="same"
+        )
+        self.act4 = nn.LeakyReLU(negative_slope=0.3, inplace=True)
 
-        x, _ = self.lstm(x)                         # (B, seq_len, 2*hidden)
-        x = self.out_layer(x)                       # (B, seq_len, n_leads)
+        self.upsample2 = nn.Upsample(scale_factor=2, mode="linear")
 
-        # Return in (B, 3, 640) format
-        return x.permute(0, 2, 1)                   # (B, n_leads, seq_len=640)
+        self.conv_out = nn.Conv1d(
+            in_channels=16,
+            out_channels=3,
+            kernel_size=16,
+            stride=1,
+            padding="same"
+        )
+        self.tanh = nn.Tanh()
+
+    def forward(self, z):
+        B = z.size(0)
+
+        x = self.fc(z)
+        x = x.view(B, self.base_len, self.feat_dim)
+
+        x, _ = self.bilstm(x)
+
+        x = x.permute(0, 2, 1)
+
+        x = self.conv1(x)
+        x = self.act1(x)
+
+        x = self.conv2(x)
+        x = self.act2(x)
+
+        x = self.upsample1(x)
+
+        x = self.conv3(x)
+        x = self.act3(x)
+
+        x = self.conv4(x)
+        x = self.act4(x)
+
+        x = self.upsample2(x)
+
+        x = self.conv_out(x)
+        x = self.tanh(x)
+
+        return x
 
 
 class MiniBatchDiscrimination(nn.Module):
@@ -172,55 +284,83 @@ class Critic(nn.Module):
         super().__init__()
         self.ecg_length = ecg_length
         self.n_leads = n_leads
-
-        self.net = nn.Sequential(
-            # 640 -> 320
-            nn.Conv1d(n_leads, 32, kernel_size=15, stride=2, padding=7),
-            nn.LeakyReLU(0.2, inplace=True),
-
-            # 320 -> 160
-            nn.Conv1d(32, 64, kernel_size=15, stride=2, padding=7),
-            nn.LeakyReLU(0.2, inplace=True),
-
-            # 160 -> 80
-            nn.Conv1d(64, 128, kernel_size=11, stride=2, padding=5),
-            nn.LeakyReLU(0.2, inplace=True),
-
-            # 80 -> 40
-            nn.Conv1d(128, 256, kernel_size=11, stride=2, padding=5),
-            nn.LeakyReLU(0.2, inplace=True),
-
-            # 40 -> 20
-            nn.Conv1d(256, 256, kernel_size=11, stride=2, padding=5),
-            nn.LeakyReLU(0.2, inplace=True),
+        self.conv1 = nn.Conv1d(
+            in_channels=n_leads,
+            out_channels=32,
+            kernel_size=16,
+            stride=1,
+            padding="same"
         )
+        self.act1 = nn.LeakyReLU(negative_slope=0.3, inplace=True)
 
-        with torch.no_grad():
-            dummy = torch.zeros(1, n_leads, ecg_length)
-            feat = self.net(dummy)
-            self.flatten_dim = feat.view(1, -1).size(1)
+        self.conv2 = nn.Conv1d(
+            in_channels=32,
+            out_channels=64,
+            kernel_size=16,
+            stride=1,
+            padding="same"
+        )
+        self.act2 = nn.LeakyReLU(negative_slope=0.3, inplace=True)
 
-        self.head = nn.Linear(self.flatten_dim, 1)
+        self.pool1 = nn.MaxPool1d(kernel_size=2, stride=2)
 
-    def forward(self, ecg):
-        """
-        ecg: (B, 3, 640) or (B, 640, 3)
-        """
-        if ecg.dim() != 3:
-            raise ValueError(f"Expected 3D input, got {ecg.shape}")
+        self.conv3 = nn.Conv1d(
+            in_channels=64,
+            out_channels=128,
+            kernel_size=16,
+            stride=1,
+            padding="same"
+        )
+        self.act3 = nn.LeakyReLU(negative_slope=0.3, inplace=True)
 
-        # If (B, 640, 3), transpose to (B, 3, 640)
-        if ecg.shape[1] == self.ecg_length and ecg.shape[2] == self.n_leads:
-            ecg = ecg.permute(0, 2, 1)
+        self.conv4 = nn.Conv1d(
+            in_channels=128,
+            out_channels=256,
+            kernel_size=16,
+            stride=1,
+            padding="same"
+        )
+        self.act4 = nn.LeakyReLU(negative_slope=0.3, inplace=True)
 
-        x = self.net(ecg)
+        self.pool2 = nn.MaxPool1d(kernel_size=2, stride=2)
+
+        self.fc = nn.Linear(256 * 160, 1)
+
+    def forward(self, x):
+        if x.shape[1] == self.ecg_length and x.shape[2] == self.n_leads:
+            x = x.permute(0, 2, 1)
+
+        x = self.conv1(x)
+        x = self.act1(x)
+
+        x = self.conv2(x)
+        x = self.act2(x)
+
+        x = self.pool1(x)
+
+        x = self.conv3(x)
+        x = self.act3(x)
+
+        x = self.conv4(x)
+        x = self.act4(x)
+
+        x = self.pool2(x)
+
         x = x.view(x.size(0), -1)
-        x = self.head(x)
+        x = self.fc(x)
+
         return x
 
 
 def flatten_ecg(x):
     return x.reshape(x.size(0), -1)
+
+
+def downsample_for_dtw(x, factor=4):
+    if x.shape[1] == 640 and x.shape[2] == 3:
+        x = x.permute(0, 2, 1)
+    x = F.avg_pool1d(x, kernel_size=factor, stride=factor)
+    return x.permute(0, 2, 1)
 
 
 def train_wgan_gp(generator, critic, dataloader, num_epochs, latent_dim, n_critic, lambda_gp, lambda_dtw, g_optimizer, c_optimizer, device, image_path, model_path):
@@ -308,12 +448,14 @@ def train_wgan_gp(generator, critic, dataloader, num_epochs, latent_dim, n_criti
             critic_fake = critic(fake_ecg)  # Use critic to train generator
             loss_generator = -critic_fake.mean()  # Generator Wasserstein loss
             # Compute the mvDTW loss figure
-            idx = torch.randperm(batch_size, device=device)[:subset]
-            mvDTW_value = dtw(fake_ecg[idx], real_ecg[idx]).mean()
+            # idx = torch.randperm(batch_size, device=device)[:subset]
+            fake_sub = downsample_for_dtw(fake_ecg, factor=4)
+            real_sub = downsample_for_dtw(real_ecg, factor=4)
+            mvDTW_value = dtw(fake_sub, real_sub).mean()
             mmd.reset()
             with torch.no_grad():
-                fake_flat = flatten_ecg(fake_ecg[idx])
-                real_flat = flatten_ecg(real_ecg[idx])
+                fake_flat = flatten_ecg(fake_ecg)
+                real_flat = flatten_ecg(real_ecg)
                 fake_flat = fake_flat.to(device, dtype=torch.float32)
                 real_flat = real_flat.to(device, dtype=torch.float32)
                 mmd.update((fake_flat, real_flat))
@@ -384,16 +526,13 @@ def train_wgan_gp(generator, critic, dataloader, num_epochs, latent_dim, n_criti
 def main():
     # Set GPU device availability
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    latent_dim_local = latent_dim
     num_epochs = 50  # Number of epochs
     n_critic = 3  # Number of times critic is trained (default=5)
     lambda_gp = 10.0  # Gradient penalty modifier hyperparameter (default=10.0)
     # Dynamic time warping modifier hyperparameter (default=0.1)
     lambda_dtw = 0.1
     GAN_model_num = 0
-    generator = Generator(ecg_length=ecg_length, n_leads=n_leads,
-                          # Create Generator model and send to GPU
-                          latent_dim=latent_dim_local).to(device)
+    generator = Generator(latent_dim=latent_dim).to(device)
     critic = Critic(ecg_length=ecg_length, n_leads=n_leads).to(
         device)  # Create critic model and send to GPU
     g_optimizer = optim.Adam(generator.parameters(),
@@ -410,7 +549,7 @@ def main():
     # Assign path for model to be saved to
     model_path = f"models/BiLSTM_CNN_WGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"
     os.makedirs(model_path)  # Create new folder for the models to be saved to
-    train_wgan_gp(generator, critic, dataloader, num_epochs, latent_dim_local,
+    train_wgan_gp(generator, critic, dataloader, num_epochs, latent_dim,
                   # Begin training loop
                   n_critic, lambda_gp, lambda_dtw, g_optimizer, c_optimizer, device, image_path, model_path)
     print(f"Model saved to: {model_path}/Model.pth")
