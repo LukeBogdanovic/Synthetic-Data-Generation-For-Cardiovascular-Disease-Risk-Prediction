@@ -17,6 +17,22 @@ n_leads = 3
 BATCH_SIZE = 128
 
 
+class NoiseInjection(nn.Module):
+    """
+    Adds learned per-channel noise (StyleGAN trick).
+    Produces ECG-like micro-variability.
+    """
+
+    def __init__(self, channels):
+        super().__init__()
+        self.weight = nn.Parameter(torch.zeros(1, channels, 1))
+
+    def forward(self, x, noise=None):
+        if noise is None:
+            noise = torch.randn(x.size(0), 1, x.size(2), device=x.device)
+        return x + self.weight * noise
+
+
 class DeconvBlock1D(nn.Module):
     def __init__(self, in_ch, out_ch):
         super().__init__()
@@ -27,11 +43,22 @@ class DeconvBlock1D(nn.Module):
             padding=1,
             bias=False
         )
+        self.conv = nn.Conv1d(
+            in_channels=out_ch,
+            out_channels=out_ch,
+            kernel_size=3,
+            padding=1
+        )
         self.norm = nn.InstanceNorm1d(out_ch, affine=True)
-        self.act = nn.ReLU(inplace=True)
+        self.act = nn.LeakyReLU(0.3, inplace=True)
+        self.noise = NoiseInjection(out_ch)
 
     def forward(self, x):
         x = self.deconv(x)
+        x = self.norm(x)
+        x = self.noise(x)
+        x = self.act(x)
+        x = self.conv(x)
         x = self.norm(x)
         x = self.act(x)
         return x
@@ -48,7 +75,7 @@ class Generator(nn.Module):
         self,
         ecg_length: int = 640,
         n_leads: int = 3,
-        latent_dim: int = 128,
+        latent_dim: int = 100,
         L0: int = 5,
         ch0: int = 256,
     ):
@@ -71,7 +98,7 @@ class Generator(nn.Module):
 
         self.head = nn.Sequential(
             nn.Conv1d(chs[-1], 32, kernel_size=15, padding=7, bias=True),
-            nn.ReLU(inplace=True),
+            nn.LeakyReLU(0.3, inplace=True),
             nn.Conv1d(32, n_leads, kernel_size=7, padding=3, bias=True),
             nn.Tanh()
         )
@@ -84,7 +111,7 @@ class Generator(nn.Module):
                 nn.init.xavier_uniform_(m.weight)
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
-            elif isinstance(m, nn.InstanceNorm1d):
+            elif isinstance(m, nn.BatchNorm1d):
                 nn.init.ones_(m.weight)
                 nn.init.zeros_(m.bias)
 
@@ -99,64 +126,105 @@ class Generator(nn.Module):
         return x.permute(0, 2, 1)           # (B, 640, 3)
 
 
+class CriticConvBlock(nn.Module):
+    def __init__(self, ch0, ch1, ch2, kernel_size=16, stride=1, padding='same'):
+        super().__init__()
+        self.conv1 = nn.Conv1d(
+            ch0, ch1, kernel_size=kernel_size, stride=stride, padding=padding)
+        self.conv2 = nn.Conv1d(
+            ch1, ch2, kernel_size=kernel_size, stride=stride, padding=padding)
+        self.pool = nn.MaxPool1d(kernel_size=2, stride=2)
+        self.act = nn.LeakyReLU(negative_slope=0.3, inplace=True)
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.act(x)
+        x = self.conv2(x)
+        x = self.act(x)
+        x = self.pool(x)
+        return x
+
+
+class MiniBatchDiscrimination(nn.Module):
+    '''
+    Implements minibatch discrimination to help the critic to detect mode collapse.\\
+    Compares each sample with other samples in the same batch to add features based\\
+    on the similarity of generated signals to other signals in the batch.
+    '''
+
+    def __init__(self, input_dim, num_kernel, dim_kernel):
+        '''
+        Initialises the weights for the minibatch discrimination layer.
+
+        :param input_dim: Input dimension from the last layers output
+        :param num_kernel: Number of kernels to compute over
+        :param dim_kernel: Dimension of kernels to compute over
+        '''
+        super(MiniBatchDiscrimination, self).__init__()
+        self.num_kernel = num_kernel  # Number of kernel functions to use
+        self.dim_kernel = dim_kernel  # Dimensionality of each kernel
+        self.weight = nn.Parameter(torch.empty(
+            input_dim, num_kernel * dim_kernel))  # Create a learnable matrix
+        # Initialise the weights using Xavier
+        nn.init.xavier_uniform_(self.weight)
+
+    def forward(self, x):
+        # Project input to a new space
+        activation = torch.matmul(x, self.weight)
+        activation = activation.view(-1, self.num_kernel, self.dim_kernel)
+        a = activation.unsqueeze(3)
+        b = activation.permute(1, 2, 0).unsqueeze(0)
+        diff = torch.abs(a - b)  # Pairwise absolute difference between samples
+        # L1 norm distance across kernel dimensions
+        l1 = torch.sum(diff, dim=2)
+        features = torch.sum(torch.exp(-l1), dim=2)  # Measure the similarity
+        # Concatenate original and similarity features
+        out = torch.cat([x, features], dim=1)
+        return out
+
+
 class Critic(nn.Module):
-    def __init__(self, ecg_length=640, n_leads=3, base_ch=64):
+    '''
+    Critic class for the WGAN-GP-DTW model.\\
+    Consists of 3 convolution1D with spectral normalization for stability.\\
+    Uses minibatch discrimination layer for prevention of mode collapse.
+    '''
+
+    def __init__(self, ecg_length=640, n_leads=3, num_kernel=50, dim_kernel=10):
         super().__init__()
         self.ecg_length = ecg_length
         self.n_leads = n_leads
-        layers = []
-        in_ch = n_leads
-        chs = [base_ch, base_ch*2, base_ch*4, base_ch*4, base_ch*8]
-        for i, out_ch in enumerate(chs):
-            if i == 0:
-                k1 = 15
-            elif i == 1:
-                k1 = 11
-            else:
-                k1 = 7
-
-            layers += [
-                nn.Conv1d(in_ch, out_ch, kernel_size=k1,
-                          stride=2, padding=k1//2),
-                nn.LeakyReLU(0.2, inplace=True),
-            ]
-
-            # Second conv in stage: refine features (no further downsample)
-            k2 = 3
-            layers += [
-                nn.Conv1d(out_ch, out_ch, kernel_size=k2,
-                          stride=1, padding=k2//2),
-                nn.LeakyReLU(0.2, inplace=True),
-            ]
-            in_ch = out_ch
-        self.net = nn.Sequential(*layers)
-        self.global_pool = nn.AdaptiveAvgPool1d(1)
-        self.head = nn.Linear(in_ch, 1)
-
-        self._init_weights()
+        blocks = []
+        blocks.append(CriticConvBlock(n_leads, 32, 64))
+        blocks.append(CriticConvBlock(64, 128, 256))
+        self.conv_block = nn.Sequential(*blocks)
+        with torch.no_grad():
+            dummy = torch.zeros(1, n_leads, ecg_length)
+            h = self.conv_block(dummy)
+            flatten_dim = h.view(1, -1).size(1)
+        self.minibatch = MiniBatchDiscrimination(
+            input_dim=flatten_dim, num_kernel=num_kernel, dim_kernel=dim_kernel)
+        self.fc = nn.Linear(flatten_dim+num_kernel, 1)
 
     def _init_weights(self):
         for m in self.modules():
             if isinstance(m, nn.Conv1d):
-                nn.init.kaiming_normal_(
-                    m.weight, a=0.2, nonlinearity='leaky_relu')
+                nn.init.normal_(m.weight, mean=0.0, std=0.02)
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
+
             elif isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight)
+                nn.init.normal_(m.weight, mean=0.0, std=0.02)
                 nn.init.zeros_(m.bias)
 
     def forward(self, x):
-        # Accept (B, L, C) or (B, C, L)
-        if x.dim() != 3:
-            raise ValueError(f"Expected 3D input, got {x.shape}")
         if x.shape[1] == self.ecg_length and x.shape[2] == self.n_leads:
-            x = x.permute(0, 2, 1)  # (B, C, L)
-        h = self.net(x)           # (B, C', ~20-ish)
-        h = self.global_pool(h)   # (B, C', 1)
-        h = h.squeeze(-1)         # (B, C')
-        out = self.head(h)        # (B, 1)
-        return out
+            x = x.permute(0, 2, 1)
+        x = self.conv_block(x)
+        x = x.view(x.size(0), -1)
+        x = self.minibatch(x)
+        x = self.fc(x)
+        return x
 
 
 def flatten_ecg(x):
@@ -287,7 +355,7 @@ def main():
                             batch_size=BATCH_SIZE, shuffle=True, drop_last=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     num_epochs = 50
-    n_critic = 8
+    n_critic = 5
     lambda_gp = 10.0
     lambda_dtw = 1.0
     GAN_model_num = 0

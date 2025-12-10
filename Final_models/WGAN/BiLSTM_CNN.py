@@ -37,66 +37,6 @@ dataloader = DataLoader(TensorDataset(dataset_tensor),
                         # Create a dataset loader for training the model, shuffles on each epoch
                         batch_size=BATCH_SIZE, shuffle=True, drop_last=True)
 
-# class Generator(nn.Module):
-#     '''
-#     Generator model for the WGAN-GP-DTW model.\\
-#     Consists of an initial CNN block for the extraction of local features,\\
-#     a twin stack of bidirectional LSTMs with 50 hidden units each to model temporal features,\\
-#     and a final CNN block for signal refinement before being output through a tanh activation function.
-#     '''
-
-#     def __init__(self, ecg_length=640, n_leads=3, latent_dim=128,
-#                  seq_len=640, hidden_size=80, num_layers=2, proj_hidden=64):
-#         super().__init__()
-#         assert seq_len == ecg_length, "Here we directly generate full length = ecg_length"
-
-#         self.ecg_length = ecg_length
-#         self.n_leads = n_leads
-#         self.latent_dim = latent_dim
-#         self.seq_len = seq_len
-
-#         # latent -> (seq_len, proj_hidden)
-#         self.fc = nn.Linear(latent_dim, seq_len * proj_hidden)
-#         self.conv = nn.Conv1d()
-#         self.lstm = nn.LSTM(
-#             input_size=proj_hidden,
-#             hidden_size=hidden_size,
-#             num_layers=num_layers,
-#             batch_first=True,
-#             bidirectional=True
-#         )
-
-#         # Map BiLSTM output at each time step to n_leads
-#         self.out_layer = nn.Sequential(
-#             nn.Linear(2 * hidden_size, 64),
-#             nn.ReLU(inplace=True),
-#             nn.Linear(64, n_leads),
-#             nn.Tanh()
-#         )
-
-#         self._init_weights()
-
-#     def _init_weights(self):
-#         for m in self.modules():
-#             if isinstance(m, nn.Linear):
-#                 nn.init.xavier_uniform_(m.weight)
-#                 if getattr(m, "bias", None) is not None:
-#                     nn.init.zeros_(m.bias)
-
-#         # LSTM default init is usually fine; you can tweak if needed.
-
-#     def forward(self, noise):
-#         B = noise.size(0)
-#         # (B, seq_len * proj_hidden)
-#         x = self.fc(noise)
-#         x = x.view(B, self.seq_len, -1)             # (B, seq_len, proj_hidden)
-
-#         x, _ = self.lstm(x)                         # (B, seq_len, 2*hidden)
-#         x = self.out_layer(x)                       # (B, seq_len, n_leads)
-
-#         # Return in (B, 3, 640) format
-#         return x.permute(0, 2, 1)                   # (B, n_leads, seq_len=640)
-
 
 class NoiseInjection(nn.Module):
     def __init__(self, channels):
@@ -105,133 +45,89 @@ class NoiseInjection(nn.Module):
 
     def forward(self, x, noise=None):
         if noise is None:
-            noise = torch.randn(x.size(0), 1, x.size(2), device=x.device)
+            noise = torch.randn(x.size(0), 1, x.size(
+                2), device=x.device, dtype=x.dtype)
         return x + self.weight * noise
 
 
-class ResidualBlock1D(nn.Module):
-    def __init__(self, channels, kernel_size=5):
+class UpsampleBlock1d(nn.Module):
+    def __init__(self, ch0, ch1, ch2, kernel_size=16, stride=1, padding='same', up_scale=2, up_mode='linear'):
         super().__init__()
-        pad = (kernel_size - 1) // 2
-        self.conv1 = nn.Conv1d(channels, channels, kernel_size, padding=pad)
-        self.conv2 = nn.Conv1d(channels, channels, kernel_size, padding=pad)
-        self.bn1 = nn.BatchNorm1d(channels)
-        self.bn2 = nn.BatchNorm1d(channels)
+        self.conv1 = nn.Conv1d(
+            ch0, ch1, kernel_size=kernel_size, stride=stride, padding=padding)
+        self.conv2 = nn.Conv1d(
+            ch1, ch2, kernel_size=kernel_size, stride=stride, padding=padding)
+        self.upsample = nn.Upsample(
+            scale_factor=up_scale, mode=up_mode, align_corners=False)
+        self.act = nn.LeakyReLU(negative_slope=0.3, inplace=True)
+        self.noise1 = NoiseInjection(ch1)
+        self.noise2 = NoiseInjection(ch2)
 
     def forward(self, x):
-        residual = x
-        out = self.conv1(x)
-        out = self.bn1(out)
-        out = F.relu(out, inplace=True)
-        out = self.conv2(out)
-        out = self.bn2(out)
-        out = out + residual
-        out = F.relu(out, inplace=True)
-        return out
+        x = self.conv1(x)
+        x = self.noise1(x)
+        x = self.act(x)
+        x = self.conv2(x)
+        x = self.noise2(x)
+        x = self.act(x)
+        x = self.upsample(x)
+        return x
 
 
 class Generator(nn.Module):
-    def __init__(
-        self,
-        latent_dim=128,
-        base_len=160,
-        lstm_hidden=64,
-        feat_dim=64,
-    ):
+    def __init__(self, latent_dim=100, base_len=160, lstm_hidden=64, feat_dim=64):
         super().__init__()
-
         self.latent_dim = latent_dim
         self.base_len = base_len
         self.feat_dim = feat_dim
-
         self.fc = nn.Linear(latent_dim, base_len * feat_dim)
-
-        self.bilstm = nn.LSTM(
+        self.bilstm: nn.LSTM = nn.LSTM(
             input_size=feat_dim,
             hidden_size=lstm_hidden,
-            num_layers=1,
+            num_layers=2,
             batch_first=True,
             bidirectional=True
         )
-
-        self.conv1 = nn.Conv1d(
-            in_channels=2 * lstm_hidden,  # 128
-            out_channels=128,
-            kernel_size=16,
-            stride=1,
-            padding="same"
-        )
-        self.act1 = nn.LeakyReLU(negative_slope=0.3, inplace=True)
-
-        self.conv2 = nn.Conv1d(
-            in_channels=128,
-            out_channels=64,
-            kernel_size=16,
-            stride=1,
-            padding="same"
-        )
-        self.act2 = nn.LeakyReLU(negative_slope=0.3, inplace=True)
-
-        self.upsample1 = nn.Upsample(scale_factor=2, mode="nearest")
-
-        self.conv3 = nn.Conv1d(
-            in_channels=64,
-            out_channels=32,
-            kernel_size=16,
-            stride=1,
-            padding="same"
-        )
-        self.act3 = nn.LeakyReLU(negative_slope=0.3, inplace=True)
-
-        self.conv4 = nn.Conv1d(
-            in_channels=32,
-            out_channels=16,
-            kernel_size=16,
-            stride=1,
-            padding="same"
-        )
-        self.act4 = nn.LeakyReLU(negative_slope=0.3, inplace=True)
-
-        self.upsample2 = nn.Upsample(scale_factor=2, mode="linear")
-
+        blocks = []
+        blocks.append(UpsampleBlock1d(2*lstm_hidden, 128, 64))
+        blocks.append(UpsampleBlock1d(64, 32, 16))
+        self.conv_block = nn.Sequential(*blocks)
         self.conv_out = nn.Conv1d(
             in_channels=16,
-            out_channels=3,
+            out_channels=n_leads,
             kernel_size=16,
             stride=1,
             padding="same"
         )
         self.tanh = nn.Tanh()
 
-    def forward(self, z):
+    def _init_weights(self):
+        # Conv / Linear
+        for m in self.modules():
+            if isinstance(m, (nn.Conv1d, nn.ConvTranspose1d, nn.Linear)):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
+        # LSTM init (orthogonal + forget gate bias)
+        for name, param in self.bilstm.named_parameters():
+            if "weight_ih" in name or "weight_hh" in name:
+                nn.init.orthogonal_(param.data)
+            elif "bias" in name:
+                param.data.fill_(0.0)
+                # set forget gate bias to 1
+                n = param.size(0) // 4
+                param.data[n:2*n].fill_(1.0)
+
+    def forward(self, z: torch.Tensor):
         B = z.size(0)
-
-        x = self.fc(z)
+        x: torch.Tensor = self.fc(z)
         x = x.view(B, self.base_len, self.feat_dim)
-
         x, _ = self.bilstm(x)
-
         x = x.permute(0, 2, 1)
-
-        x = self.conv1(x)
-        x = self.act1(x)
-
-        x = self.conv2(x)
-        x = self.act2(x)
-
-        x = self.upsample1(x)
-
-        x = self.conv3(x)
-        x = self.act3(x)
-
-        x = self.conv4(x)
-        x = self.act4(x)
-
-        x = self.upsample2(x)
-
+        x = self.conv_block(x)
         x = self.conv_out(x)
         x = self.tanh(x)
-
         return x
 
 
@@ -273,6 +169,25 @@ class MiniBatchDiscrimination(nn.Module):
         return out
 
 
+class CriticConvBlock(nn.Module):
+    def __init__(self, ch0, ch1, ch2, kernel_size=16, stride=1, padding='same'):
+        super().__init__()
+        self.conv1 = nn.Conv1d(
+            ch0, ch1, kernel_size=kernel_size, stride=stride, padding=padding)
+        self.conv2 = nn.Conv1d(
+            ch1, ch2, kernel_size=kernel_size, stride=stride, padding=padding)
+        self.pool = nn.MaxPool1d(kernel_size=2, stride=2)
+        self.act = nn.LeakyReLU(negative_slope=0.3, inplace=True)
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.act(x)
+        x = self.conv2(x)
+        x = self.act(x)
+        x = self.pool(x)
+        return x
+
+
 class Critic(nn.Module):
     '''
     Critic class for the WGAN-GP-DTW model.\\
@@ -280,75 +195,40 @@ class Critic(nn.Module):
     Uses minibatch discrimination layer for prevention of mode collapse.
     '''
 
-    def __init__(self, ecg_length=640, n_leads=3):
+    def __init__(self, ecg_length=640, n_leads=3, num_kernel=50, dim_kernel=10):
         super().__init__()
         self.ecg_length = ecg_length
         self.n_leads = n_leads
-        self.conv1 = nn.Conv1d(
-            in_channels=n_leads,
-            out_channels=32,
-            kernel_size=16,
-            stride=1,
-            padding="same"
-        )
-        self.act1 = nn.LeakyReLU(negative_slope=0.3, inplace=True)
+        blocks = []
+        blocks.append(CriticConvBlock(n_leads, 32, 64))
+        blocks.append(CriticConvBlock(64, 128, 256))
+        self.conv_block = nn.Sequential(*blocks)
+        with torch.no_grad():
+            dummy = torch.zeros(1, n_leads, ecg_length)
+            h = self.conv_block(dummy)
+            flatten_dim = h.view(1, -1).size(1)
+        self.minibatch = MiniBatchDiscrimination(
+            input_dim=flatten_dim, num_kernel=50, dim_kernel=10)
+        self.fc = nn.Linear(flatten_dim+num_kernel, 1)
 
-        self.conv2 = nn.Conv1d(
-            in_channels=32,
-            out_channels=64,
-            kernel_size=16,
-            stride=1,
-            padding="same"
-        )
-        self.act2 = nn.LeakyReLU(negative_slope=0.3, inplace=True)
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv1d):
+                nn.init.normal_(m.weight, mean=0.0, std=0.02)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
 
-        self.pool1 = nn.MaxPool1d(kernel_size=2, stride=2)
-
-        self.conv3 = nn.Conv1d(
-            in_channels=64,
-            out_channels=128,
-            kernel_size=16,
-            stride=1,
-            padding="same"
-        )
-        self.act3 = nn.LeakyReLU(negative_slope=0.3, inplace=True)
-
-        self.conv4 = nn.Conv1d(
-            in_channels=128,
-            out_channels=256,
-            kernel_size=16,
-            stride=1,
-            padding="same"
-        )
-        self.act4 = nn.LeakyReLU(negative_slope=0.3, inplace=True)
-
-        self.pool2 = nn.MaxPool1d(kernel_size=2, stride=2)
-
-        self.fc = nn.Linear(256 * 160, 1)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, mean=0.0, std=0.02)
+                nn.init.zeros_(m.bias)
 
     def forward(self, x):
         if x.shape[1] == self.ecg_length and x.shape[2] == self.n_leads:
             x = x.permute(0, 2, 1)
-
-        x = self.conv1(x)
-        x = self.act1(x)
-
-        x = self.conv2(x)
-        x = self.act2(x)
-
-        x = self.pool1(x)
-
-        x = self.conv3(x)
-        x = self.act3(x)
-
-        x = self.conv4(x)
-        x = self.act4(x)
-
-        x = self.pool2(x)
-
+        x = self.conv_block(x)
         x = x.view(x.size(0), -1)
+        x = self.minibatch(x)
         x = self.fc(x)
-
         return x
 
 
@@ -527,10 +407,10 @@ def main():
     # Set GPU device availability
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     num_epochs = 50  # Number of epochs
-    n_critic = 3  # Number of times critic is trained (default=5)
+    n_critic = 5  # Number of times critic is trained (default=5)
     lambda_gp = 10.0  # Gradient penalty modifier hyperparameter (default=10.0)
     # Dynamic time warping modifier hyperparameter (default=0.1)
-    lambda_dtw = 0.1
+    lambda_dtw = 1.0
     GAN_model_num = 0
     generator = Generator(latent_dim=latent_dim).to(device)
     critic = Critic(ecg_length=ecg_length, n_leads=n_leads).to(

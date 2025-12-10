@@ -34,7 +34,7 @@ class NoiseInjection(nn.Module):
 
 
 class Generator(nn.Module):
-    def __init__(self, ecg_length=640, n_leads=3, latent_dim=128,
+    def __init__(self, ecg_length=640, n_leads=3, latent_dim=100,
                  L0=10, ch0=256, ups_factors=(2, 2, 2, 2, 2, 2), ch_min=16):
         super().__init__()
         self.ecg_length = ecg_length
@@ -42,7 +42,6 @@ class Generator(nn.Module):
         self.latent_dim = latent_dim
         self.L0 = L0
 
-        # sanity check
         prod = 1
         for f in ups_factors:
             prod *= f
@@ -52,34 +51,35 @@ class Generator(nn.Module):
                 f"Got {L0} * {prod} = {L0 * prod} != {ecg_length}"
             )
 
-        # latent → (ch0, L0)
         self.fc = nn.Linear(latent_dim, ch0 * L0)
 
-        # channel schedule, tapering down
         chs = [ch0]
         c = ch0
         for _ in ups_factors:
             c = max(c // 2, ch_min)
             chs.append(c)
 
-        # upsampling blocks: Upsample → Conv1d → BN → ReLU
         blocks = []
         for cin, cout, sf in zip(chs[:-1], chs[1:], ups_factors):
             blocks += [
                 nn.Upsample(scale_factor=sf, mode="linear",
                             align_corners=False),
                 nn.Conv1d(cin, cout, kernel_size=5, padding=2, bias=False),
-                nn.BatchNorm1d(cout),
-                nn.ReLU(inplace=True),
+                nn.InstanceNorm1d(cout),
+                NoiseInjection(cout),
+                nn.LeakyReLU(0.3, inplace=True),
+                nn.Conv1d(cout, cout, kernel_size=3, padding=1),
+                nn.InstanceNorm1d(cout),
+                NoiseInjection(cout),
+                nn.LeakyReLU(0.3, inplace=True)
             ]
         self.deconv = nn.Sequential(*blocks)
 
-        # head: a bit of extra mixing then project to 3 leads
         self.head = nn.Sequential(
             nn.Conv1d(chs[-1], chs[-1], kernel_size=7, padding=3),
-            nn.ReLU(inplace=True),
+            nn.LeakyReLU(0.3, inplace=True),
             nn.Conv1d(chs[-1], n_leads, kernel_size=7, padding=3),
-            nn.Tanh(),  # ECG scaled to [-1, 1]
+            nn.Tanh(),
         )
 
         self._init_weights()
@@ -146,6 +146,25 @@ class MiniBatchDiscrimination(nn.Module):
         return out
 
 
+class CriticConvBlock(nn.Module):
+    def __init__(self, ch0, ch1, ch2, kernel_size=16, stride=1, padding='same'):
+        super().__init__()
+        self.conv1 = nn.Conv1d(
+            ch0, ch1, kernel_size=kernel_size, stride=stride, padding=padding)
+        self.conv2 = nn.Conv1d(
+            ch1, ch2, kernel_size=kernel_size, stride=stride, padding=padding)
+        self.pool = nn.MaxPool1d(kernel_size=2, stride=2)
+        self.act = nn.LeakyReLU(negative_slope=0.3, inplace=True)
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.act(x)
+        x = self.conv2(x)
+        x = self.act(x)
+        x = self.pool(x)
+        return x
+
+
 class Critic(nn.Module):
     '''
     Critic class for the WGAN-GP-DTW model.\\
@@ -153,52 +172,40 @@ class Critic(nn.Module):
     Uses minibatch discrimination layer for prevention of mode collapse.
     '''
 
-    def __init__(self, ecg_length=640, n_leads=3):
+    def __init__(self, ecg_length=640, n_leads=3, num_kernel=50, dim_kernel=10):
         super().__init__()
         self.ecg_length = ecg_length
         self.n_leads = n_leads
-
-        def conv_block(cin, cout, k, s=2):
-            pad = (k - 1) // 2
-            return nn.Sequential(
-                nn.Conv1d(cin, cout, kernel_size=k, stride=s, padding=pad),
-                nn.LeakyReLU(0.2, inplace=True),
-            )
-
-        # 640 → 320 → 160 → 80 → 40 → 20
-        self.net = nn.Sequential(
-            conv_block(n_leads, 64, k=5, s=2),   # 640 -> 320
-            conv_block(64, 96, k=5, s=2),        # 320 -> 160
-            conv_block(96, 128, k=7, s=2),       # 160 -> 80
-            conv_block(128, 192, k=7, s=2),      # 80 -> 40
-            conv_block(192, 256, k=7, s=2),      # 40 -> 20
-        )
-
-        self.global_pool = nn.AdaptiveAvgPool1d(1)
-
+        blocks = []
+        blocks.append(CriticConvBlock(n_leads, 32, 64))
+        blocks.append(CriticConvBlock(64, 128, 256))
+        self.conv_block = nn.Sequential(*blocks)
         with torch.no_grad():
             dummy = torch.zeros(1, n_leads, ecg_length)
-            feat = self.global_pool(self.net(dummy))  # (1, C, 1)
-            self.flatten_dim = feat.view(1, -1).size(1)
+            h = self.conv_block(dummy)
+            flatten_dim = h.view(1, -1).size(1)
+        self.minibatch = MiniBatchDiscrimination(
+            input_dim=flatten_dim, num_kernel=50, dim_kernel=10)
+        self.fc = nn.Linear(flatten_dim+num_kernel, 1)
 
-        self.head = nn.Linear(self.flatten_dim, 1)
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv1d):
+                nn.init.normal_(m.weight, mean=0.0, std=0.02)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
 
-    def forward(self, ecg: torch.Tensor) -> torch.Tensor:
-        """
-        ecg: (B, 640, 3) or (B, 3, 640)
-        returns: (B, 1) WGAN score
-        """
-        if ecg.dim() != 3:
-            raise ValueError(f"Expected 3D input, got {ecg.shape}")
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, mean=0.0, std=0.02)
+                nn.init.zeros_(m.bias)
 
-        # If (B, 640, 3), transpose to (B, 3, 640)
-        if ecg.shape[1] == self.ecg_length and ecg.shape[2] == self.n_leads:
-            ecg = ecg.permute(0, 2, 1)
-
-        x = self.net(ecg)                   # (B, 256, 20)
-        x = self.global_pool(x)             # (B, 256, 1)
-        x = x.view(x.size(0), -1)           # (B, 256)
-        x = self.head(x)                    # (B, 1)
+    def forward(self, x):
+        if x.shape[1] == self.ecg_length and x.shape[2] == self.n_leads:
+            x = x.permute(0, 2, 1)
+        x = self.conv_block(x)
+        x = x.view(x.size(0), -1)
+        x = self.minibatch(x)
+        x = self.fc(x)
         return x
 
 
@@ -339,19 +346,13 @@ def main():
                             batch_size=BATCH_SIZE, shuffle=True, drop_last=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     num_epochs = 50
-    n_critic = 8
+    n_critic = 5
     lambda_gp = 10.0
     lambda_dtw = 1.0
     GAN_model_num = 0
     generator = Generator(ecg_length=ecg_length,
                           n_leads=n_leads, latent_dim=latent_dim).to(device)
     critic = Critic(ecg_length=ecg_length, n_leads=n_leads).to(device)
-    # state_dict = torch.load("models/UpsampleAndCNN_WGAN/Model_17_GP_10.0_DTW_0.1/Model.pth",
-    #                         map_location=device, weights_only=False)
-    # state_dict_gen = state_dict['gen_state_dict']
-    # generator.load_state_dict(state_dict_gen)
-    # state_dict_disc = state_dict['critic_state_dict']
-    # critic.load_state_dict(state_dict_disc)
     g_optimizer = optim.Adam(generator.parameters(), lr=2e-4, betas=[0.0, 0.9])
     c_optimier = optim.Adam(critic.parameters(), lr=1e-4, betas=[0.0, 0.9])
     while os.path.exists(f"images/UpsampleAndCNN_WGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"):
