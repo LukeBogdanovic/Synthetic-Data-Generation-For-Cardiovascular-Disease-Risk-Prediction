@@ -25,3 +25,6 @@ gan_scripts/c_funcs/dtw.so
 gan_scripts/c_funcs/dtw.o
 *.png
 .venv
+*.pth
+*.pyc
+*.zip
