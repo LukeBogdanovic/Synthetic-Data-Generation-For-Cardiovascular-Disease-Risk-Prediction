@@ -9,6 +9,8 @@ from ignite.metrics import MaximumMeanDiscrepancy
 import os
 from WGAN.preprocessing_utils import save_generated_ecg, per_lead_minmax_scaling, gradient_penalty
 import torch.nn.functional as F
+from WGAN.UpsampleAndConv1D import Generator as WGAN_Gen
+from WGAN.UpsampleAndConv1D import Critic as WGAN_Critic
 
 latent_dim = 100
 num_seconds = 5
@@ -17,24 +19,8 @@ n_leads = 3
 BATCH_SIZE = 128
 
 
-class NoiseInjection(nn.Module):
-    """
-    Adds learned per-channel noise (StyleGAN trick).
-    Produces ECG-like micro-variability.
-    """
-
-    def __init__(self, channels):
-        super().__init__()
-        self.weight = nn.Parameter(torch.zeros(1, channels, 1))
-
-    def forward(self, x, noise=None):
-        if noise is None:
-            noise = torch.randn(x.size(0), 1, x.size(2), device=x.device)
-        return x + self.weight * noise
-
-
 class Generator(nn.Module):
-    def __init__(self, ecg_length=640, n_leads=3, latent_dim=100,
+    def __init__(self, ecg_length=640, n_leads=3, latent_dim=100, condition_dim=32,
                  L0=10, ch0=256, ups_factors=(2, 2, 2, 2, 2, 2), ch_min=16):
         super().__init__()
         self.ecg_length = ecg_length
@@ -51,7 +37,7 @@ class Generator(nn.Module):
                 f"Got {L0} * {prod} = {L0 * prod} != {ecg_length}"
             )
 
-        self.fc = nn.Linear(latent_dim, ch0 * L0)
+        self.fc = nn.Linear(latent_dim+condition_dim, ch0 * L0)
 
         chs = [ch0]
         c = ch0
@@ -66,11 +52,9 @@ class Generator(nn.Module):
                             align_corners=False),
                 nn.Conv1d(cin, cout, kernel_size=5, padding=2, bias=False),
                 nn.InstanceNorm1d(cout),
-                NoiseInjection(cout),
                 nn.LeakyReLU(0.3, inplace=True),
                 nn.Conv1d(cout, cout, kernel_size=3, padding=1),
                 nn.InstanceNorm1d(cout),
-                NoiseInjection(cout),
                 nn.LeakyReLU(0.3, inplace=True)
             ]
         self.deconv = nn.Sequential(*blocks)
@@ -80,6 +64,12 @@ class Generator(nn.Module):
             nn.LeakyReLU(0.3, inplace=True),
             nn.Conv1d(chs[-1], n_leads, kernel_size=7, padding=3),
             nn.Tanh(),
+        )
+
+        self.cond_block = nn.Sequential(
+            nn.Embedding(4, condition_dim),
+            nn.Linear(condition_dim, condition_dim),
+            nn.LeakyReLU(0.2, inplace=True)
         )
 
         self._init_weights()
@@ -96,16 +86,18 @@ class Generator(nn.Module):
         nn.init.xavier_uniform_(self.fc.weight)
         nn.init.zeros_(self.fc.bias)
 
-    def forward(self, z: torch.Tensor) -> torch.Tensor:
+    def forward(self, z: torch.Tensor, condition) -> torch.Tensor:
         """
         z: (B, latent_dim)
         return: (B, 640, 3)
         """
-        x = self.fc(z)                      # (B, ch0 * L0)
-        x = x.view(z.size(0), -1, self.L0)  # (B, ch0, L0)
-        x = self.deconv(x)                  # (B, ch_last, 640)
-        x = self.head(x)                    # (B, 3, 640)
-        return x.permute(0, 2, 1)           # (B, 640, 3)
+        cond_emb = self.cond_block(condition.squeeze(1))
+        combined = torch.cat((z, cond_emb), dim=1)
+        x = self.fc(combined)
+        x = x.view(z.size(0), -1, self.L0)
+        x = self.deconv(x)
+        x = self.head(x)
+        return x.permute(0, 2, 1)
 
 
 class MiniBatchDiscrimination(nn.Module):
@@ -157,12 +149,25 @@ class CriticConvBlock(nn.Module):
         self.act = nn.LeakyReLU(negative_slope=0.3, inplace=True)
 
     def forward(self, x):
-        x = self.conv1(x)
-        x = self.act(x)
-        x = self.conv2(x)
-        x = self.act(x)
+        x = self.act(self.conv1(x))
+        x = self.act(self.conv2(x))
         x = self.pool(x)
         return x
+
+
+class FiLM1D(nn.Module):
+    def __init__(self, channels: int, cond_dim: int, hidden: int = 64):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(cond_dim, hidden),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Linear(hidden, 2*channels)
+        )
+
+    def forward(self, x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+        gb = self.net(c)
+        g, b = gb.chunk(2, dim=1)
+        return x * (1.0 + g.unsqueeze(-1)) + b.unsqueeze(-1)
 
 
 class Critic(nn.Module):
@@ -172,41 +177,83 @@ class Critic(nn.Module):
     Uses minibatch discrimination layer for prevention of mode collapse.
     '''
 
-    def __init__(self, ecg_length=640, n_leads=3, num_kernel=50, dim_kernel=10):
+    def __init__(self, ecg_length=640, n_leads=3, num_classes=4, num_kernel=50, dim_kernel=10, condition_dim=32, concat_condition=True):
         super().__init__()
         self.ecg_length = ecg_length
         self.n_leads = n_leads
-        blocks = []
-        blocks.append(CriticConvBlock(n_leads, 32, 64))
-        blocks.append(CriticConvBlock(64, 128, 256))
-        self.conv_block = nn.Sequential(*blocks)
+        self.condition_dim = condition_dim
+        self.concat_condition = True
+        self.cond_block = nn.Sequential(
+            nn.Embedding(num_classes, condition_dim),
+            nn.Linear(condition_dim, condition_dim),
+            nn.LeakyReLU(0.2, inplace=True)
+        )
+        self.block1 = CriticConvBlock(n_leads, 32, 64)
+        self.block2 = CriticConvBlock(64, 128, 256)
+        self.film1 = FiLM1D(channels=64, cond_dim=condition_dim, hidden=64)
+        self.film2 = FiLM1D(channels=256, cond_dim=condition_dim, hidden=64)
         with torch.no_grad():
             dummy = torch.zeros(1, n_leads, ecg_length)
-            h = self.conv_block(dummy)
+            c_dummy = torch.zeros(1, dtype=torch.long)
+            c_vec = self.cond_block(c_dummy)
+            h = self.block1(dummy)
+            h = self.film1(h, c_vec)
+            h = self.block2(h)
+            h = self.film2(h, c_vec)
             flatten_dim = h.view(1, -1).size(1)
         self.minibatch = MiniBatchDiscrimination(
-            input_dim=flatten_dim, num_kernel=50, dim_kernel=10)
-        self.fc = nn.Linear(flatten_dim+num_kernel, 1)
+            input_dim=flatten_dim,
+            num_kernel=num_kernel,
+            dim_kernel=dim_kernel
+        )
+        fc_in = flatten_dim+num_kernel
+        if self.concat_condition:
+            fc_in += condition_dim
+        self.fc = nn.Linear(fc_in, 1)
 
-    def _init_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Conv1d):
-                nn.init.normal_(m.weight, mean=0.0, std=0.02)
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-
-            elif isinstance(m, nn.Linear):
-                nn.init.normal_(m.weight, mean=0.0, std=0.02)
-                nn.init.zeros_(m.bias)
-
-    def forward(self, x):
-        if x.shape[1] == self.ecg_length and x.shape[2] == self.n_leads:
+    def forward(self, x, condition):
+        if condition.dim() == 2 and condition.size(1) == 1:
+            condition = condition.squeeze(1)
+        c_vec = self.cond_block(condition)
+        if x.dim() == 3 and x.shape[1] == self.ecg_length and x.shape[2] == self.n_leads:
             x = x.permute(0, 2, 1)
-        x = self.conv_block(x)
+        x = self.block1(x)
+        x = self.film1(x, c_vec)
+        x = self.block2(x)
+        x = self.film2(x, c_vec)
         x = x.view(x.size(0), -1)
         x = self.minibatch(x)
-        x = self.fc(x)
-        return x
+        if self.concat_condition:
+            x = torch.cat([x, c_vec], dim=1)
+        return self.fc(x)
+
+
+def load_wgan_to_cwgan_generator(wgan_gen: WGAN_Gen, cwgan_gen: Generator, latent_dim: int):
+    wgan_sd = wgan_gen.state_dict()
+    cwgan_sd = cwgan_gen.state_dict()
+    compatible = {}
+    for k, v in wgan_sd.items():
+        if k in cwgan_sd and cwgan_sd[k].shape == v.shape:
+            compatible[k] = v
+    cwgan_gen.load_state_dict(compatible, strict=False)
+    with torch.no_grad():
+        cwgan_gen.fc.weight[:, :latent_dim].copy_(wgan_sd["fc.weight"])
+        cwgan_gen.fc.bias.copy_(wgan_sd["fc.bias"])
+    return cwgan_gen
+
+
+def load_wgan_to_cwgan_critic(wgan_critic: WGAN_Critic, cwgan_critic: Critic):
+    wgan_sd = wgan_critic.state_dict()
+    wgan_sd_filtered = {k: v for k, v in wgan_sd.items() if k not in [
+        "fc.weight"]}
+    cwgan_critic.load_state_dict(wgan_sd_filtered, strict=False)
+    with torch.no_grad():
+        w_fc_w = wgan_sd["fc.weight"]
+        w_fc_b = wgan_sd["fc.bias"]
+        in_w = w_fc_w.shape[1]
+        cwgan_critic.fc.weight[:, :in_w].copy_(w_fc_w)
+        cwgan_critic.fc.bias.copy_(w_fc_b)
+    return cwgan_critic
 
 
 def flatten_ecg(x):
@@ -214,12 +261,10 @@ def flatten_ecg(x):
 
 
 def downsample_for_dtw(x, factor=4):
-    # x: (B, 640, 3) or (B, 3, 640) – you use (B, 640, 3) here
     if x.shape[1] == 640 and x.shape[2] == 3:
-        x = x.permute(0, 2, 1)  # (B, 3, 640)
-    # (B, 3, 640/factor)
+        x = x.permute(0, 2, 1)
     x = F.avg_pool1d(x, kernel_size=factor, stride=factor)
-    return x.permute(0, 2, 1)  # (B, 640/factor, 3)
+    return x.permute(0, 2, 1)
 
 
 def train(generator, critic, dataloader, num_epochs, latent_dim, n_critic, lambda_gp, lambda_dtw, g_optimizer, c_optimizer, device, image_path, model_path, lead_maxs, lead_mins):
@@ -236,8 +281,6 @@ def train(generator, critic, dataloader, num_epochs, latent_dim, n_critic, lambd
     }
     softdtw = SoftDTWLossPyTorch(gamma=0.5, normalize=True).to(device)
     mmd = MaximumMeanDiscrepancy(var=1.0, device=device)
-    subset = min(64, BATCH_SIZE)
-    mvdtw_subset = min(64, BATCH_SIZE)
     for epoch in range(num_epochs):
         start_time_epoch = time.time()
         running_g_loss = 0.0
@@ -247,38 +290,32 @@ def train(generator, critic, dataloader, num_epochs, latent_dim, n_critic, lambd
         running_wgap = 0.0
         running_gp = 0.0
         mmd.reset()
-        for i, (real_ecg, ) in enumerate(dataloader):
+        for i, (real_ecg, labels) in enumerate(dataloader):
             start_time_step = time.time()
-            real_ecg = real_ecg.to(device)
+            real_ecg: torch.Tensor = real_ecg.to(device)
+            labels: torch.Tensor = labels.to(device)
             batch_size = real_ecg.size(0)
             for _ in range(n_critic):
                 noise = torch.randn(batch_size, latent_dim, device=device)
-                fake_ecg = generator(noise)
+                fake_ecg: torch.Tensor = generator(noise, labels)
                 c_optimizer.zero_grad()
-                critic_real = critic(real_ecg)
-                # fake_ecg = fake_ecg.permute(0, 2, 1)
-                critic_fake = critic(fake_ecg.detach())
+                critic_real = critic(real_ecg, labels)
+                critic_fake = critic(fake_ecg.detach(), labels)
                 loss_critic = critic_fake.mean() - critic_real.mean()
                 gp = gradient_penalty(
-                    critic, real_ecg, fake_ecg, device=device)
+                    critic, real_ecg, fake_ecg, device=device, labels=labels)
                 loss_critic = loss_critic + (lambda_gp*gp)
                 loss_critic.backward()
                 c_optimizer.step()
             noise = torch.randn(batch_size, latent_dim, device=device)
-            fake_ecg = generator(noise)
+            fake_ecg = generator(noise, labels)
             g_optimizer.zero_grad()
-            # fake_ecg = fake_ecg.permute(0, 2, 1)
-            critic_fake = critic(fake_ecg)
+            critic_fake = critic(fake_ecg, labels)
             loss_generator = -critic_fake.mean()
-            # mvdtw_idx = torch.randperm(batch_size, device=device)[
-            #     :mvdtw_subset]
-            # idx = torch.randperm(batch_size, device=device)[:subset]
             fake_sub = downsample_for_dtw(fake_ecg, factor=4)
             real_sub = downsample_for_dtw(real_ecg, factor=4)
             mvDTW_value = softdtw(fake_sub, real_sub).mean()
             mmd.reset()
-            # compute_mmd = (i % 5 == 0)
-            # if compute_mmd:
             with torch.no_grad():
                 fake_flat = flatten_ecg(fake_ecg)
                 real_flat = flatten_ecg(real_ecg)
@@ -289,7 +326,6 @@ def train(generator, critic, dataloader, num_epochs, latent_dim, n_critic, lambd
             loss_generator.backward()
             g_optimizer.step()
             mmd_step = mmd.compute()
-            # mmd_value = compute_mmd(real_ecg, fake_ecg, metric_lib=metric_lib)
             wgap = critic_real.mean().item() - critic_fake.mean().item()
             # Add calculated values to accumulation variables
             running_c_loss += loss_critic.item()
@@ -305,7 +341,7 @@ def train(generator, critic, dataloader, num_epochs, latent_dim, n_critic, lambd
         end_time_epoch = time.time()
         save_generated_ecg(generator, epoch,
                            # Save images of each generated lead
-                           device, latent_dim=latent_dim, save_path=image_path, lead_maxs=lead_maxs, lead_mins=lead_mins, num_classes=0)
+                           device, latent_dim=latent_dim, save_path=image_path, lead_maxs=lead_maxs, lead_mins=lead_mins, num_classes=4)
         # Calculate average metrics for epoch
         gen_loss_epoch = running_g_loss / len(dataloader)
         critic_loss_epoch = running_c_loss / len(dataloader)
@@ -337,35 +373,52 @@ def train(generator, critic, dataloader, num_epochs, latent_dim, n_critic, lambd
 
 
 def main():
-    if os.path.exists("../../biased_ptbxl_ecgs.npy"):
-        data = np.load("../../biased_ptbxl_ecgs.npy", allow_pickle=True)
-        normalized_data, lead_mins, lead_maxs = per_lead_minmax_scaling(data)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    wgan_gen = WGAN_Gen().to(device)
+    wgan_critic = WGAN_Critic().to(device)
+    ckpt = torch.load(
+        "WGAN/models/UpsampleAndCNN_WGAN/Model_0_GP_10.0_DTW_0.0/Model.pth", weights_only=False)
+    wgan_gen.load_state_dict(ckpt['gen_state_dict'])
+    wgan_critic.load_state_dict(ckpt['critic_state_dict'])
+    if os.path.exists("../fine_tune_data.npy"):
+        data = np.load("../fine_tune_data.npy", allow_pickle=True)
+        segments = [item[0] for item in data]
+        ecg_dataset = np.stack(segments)
+        normalized_data, lead_mins, lead_maxs = per_lead_minmax_scaling(
+            ecg_dataset=ecg_dataset)
+        labels = [item[1] for item in data]
+    labels = np.array(labels)
     normalized_data = np.array(normalized_data)
     dataset_tensor = torch.tensor(normalized_data, dtype=torch.float32)
-    dataloader = DataLoader(TensorDataset(dataset_tensor),
+    labels_tensor = torch.tensor(labels, dtype=torch.long).unsqueeze(1)
+    dataloader = DataLoader(TensorDataset(dataset_tensor, labels_tensor),
                             batch_size=BATCH_SIZE, shuffle=True, drop_last=True)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     num_epochs = 50
-    n_critic = 5
+    n_critic = 3
     lambda_gp = 10.0
     lambda_dtw = 1.0
     GAN_model_num = 0
     generator = Generator(ecg_length=ecg_length,
                           n_leads=n_leads, latent_dim=latent_dim).to(device)
     critic = Critic(ecg_length=ecg_length, n_leads=n_leads).to(device)
+    generator = load_wgan_to_cwgan_generator(
+        wgan_gen=wgan_gen, cwgan_gen=generator, latent_dim=latent_dim)
+    critic = load_wgan_to_cwgan_critic(
+        wgan_critic=wgan_critic, cwgan_critic=critic)
     g_optimizer = optim.Adam(generator.parameters(), lr=2e-4, betas=[0.0, 0.9])
     c_optimier = optim.Adam(critic.parameters(), lr=1e-4, betas=[0.0, 0.9])
-    while os.path.exists(f"images/UpsampleAndCNN_WGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"):
+    while os.path.exists(f"CWGAN/images/UpsampleAndCNN_CWGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"):
         GAN_model_num += 1
-    image_path = f"images/UpsampleAndCNN_WGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"
+    image_path = f"CWGAN/images/UpsampleAndCNN_CWGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"
     os.makedirs(image_path)
     GAN_model_num = 0
-    while os.path.exists(f"models/UpsampleAndCNN_WGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"):
+    while os.path.exists(f"CWGAN/models/UpsampleAndCNN_CWGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"):
         GAN_model_num += 1
-    model_path = f"models/UpsampleAndCNN_WGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"
+    model_path = f"CWGAN/models/UpsampleAndCNN_CWGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"
     os.makedirs(model_path)
     train(generator, critic, dataloader, num_epochs, latent_dim, n_critic,
           lambda_gp, lambda_dtw, g_optimizer, c_optimier, device, image_path, model_path, lead_maxs, lead_mins)
+    print(f"Model saved to: {model_path}/Model.pth")
 
 
 if __name__ == "__main__":
