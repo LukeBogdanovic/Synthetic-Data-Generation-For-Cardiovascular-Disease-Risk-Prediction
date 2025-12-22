@@ -14,7 +14,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
-from preprocessing_utils import per_lead_minmax_scaling, save_generated_ecg, gradient_penalty
+from WGAN.preprocessing_utils import per_lead_minmax_scaling, save_generated_ecg, gradient_penalty
 import pynvml
 import torch.nn.functional as F
 
@@ -23,19 +23,6 @@ num_seconds = 5  # Number of seconds as input
 ecg_length = 128 * num_seconds  # Length of input ECG signals
 n_leads = 3  # Number of leads as input and to generate
 BATCH_SIZE = 128  # Batch size for dataset
-
-
-if os.path.exists("../../biased_ptbxl_ecgs.npy"):  # Check for the saved numpy file
-    # Load the saved numpy file
-    data = np.load("../../biased_ptbxl_ecgs.npy", allow_pickle=True)
-    normalized_data, lead_mins, lead_maxs = per_lead_minmax_scaling(data)
-# Create numpy array of each normalized ecg
-normalized_data = np.array(normalized_data)
-# Convert the numpy array to a torch tensor
-dataset_tensor = torch.tensor(normalized_data, dtype=torch.float32)
-dataloader = DataLoader(TensorDataset(dataset_tensor),
-                        # Create a dataset loader for training the model, shuffles on each epoch
-                        batch_size=BATCH_SIZE, shuffle=True, drop_last=True)
 
 
 class NoiseInjection(nn.Module):
@@ -405,6 +392,17 @@ def train_wgan_gp(generator, critic, dataloader, num_epochs, latent_dim, n_criti
 
 def main():
     # Set GPU device availability
+    if os.path.exists("../../biased_ptbxl_ecgs.npy"):  # Check for the saved numpy file
+        # Load the saved numpy file
+        data = np.load("../../biased_ptbxl_ecgs.npy", allow_pickle=True)
+        normalized_data, lead_mins, lead_maxs = per_lead_minmax_scaling(data)
+    # Create numpy array of each normalized ecg
+    normalized_data = np.array(normalized_data)
+    # Convert the numpy array to a torch tensor
+    dataset_tensor = torch.tensor(normalized_data, dtype=torch.float32)
+    dataloader = DataLoader(TensorDataset(dataset_tensor),
+                            # Create a dataset loader for training the model, shuffles on each epoch
+                            batch_size=BATCH_SIZE, shuffle=True, drop_last=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     num_epochs = 50  # Number of epochs
     n_critic = 5  # Number of times critic is trained (default=5)
