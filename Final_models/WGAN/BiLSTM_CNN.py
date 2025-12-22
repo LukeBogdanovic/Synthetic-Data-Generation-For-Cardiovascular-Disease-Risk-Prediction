@@ -230,7 +230,7 @@ def downsample_for_dtw(x, factor=4):
     return x.permute(0, 2, 1)
 
 
-def train_wgan_gp(generator, critic, dataloader, num_epochs, latent_dim, n_critic, lambda_gp, lambda_dtw, g_optimizer, c_optimizer, device, image_path, model_path):
+def train_wgan_gp(generator, critic, dataloader, num_epochs, latent_dim, n_critic, lambda_gp, lambda_dtw, g_optimizer, c_optimizer, device, image_path, model_path, lead_mins, lead_maxs):
     '''
     Training loop for the WGAN with gradient penalty model. Trains for the number of epochs
     specified using the optimizers provided for the generator and critic. Creates a noise
@@ -391,6 +391,17 @@ def train_wgan_gp(generator, critic, dataloader, num_epochs, latent_dim, n_criti
 
 
 def main():
+    if os.path.exists("../../biased_ptbxl_ecgs.npy"):  # Check for the saved numpy file
+        # Load the saved numpy file
+        data = np.load("../../biased_ptbxl_ecgs.npy", allow_pickle=True)
+        normalized_data, lead_mins, lead_maxs = per_lead_minmax_scaling(data)
+    # Create numpy array of each normalized ecg
+    normalized_data = np.array(normalized_data)
+    # Convert the numpy array to a torch tensor
+    dataset_tensor = torch.tensor(normalized_data, dtype=torch.float32)
+    dataloader = DataLoader(TensorDataset(dataset_tensor),
+                            # Create a dataset loader for training the model, shuffles on each epoch
+                            batch_size=BATCH_SIZE, shuffle=True, drop_last=True)
     # Set GPU device availability
     if os.path.exists("../../biased_ptbxl_ecgs.npy"):  # Check for the saved numpy file
         # Load the saved numpy file
@@ -429,7 +440,7 @@ def main():
     os.makedirs(model_path)  # Create new folder for the models to be saved to
     train_wgan_gp(generator, critic, dataloader, num_epochs, latent_dim,
                   # Begin training loop
-                  n_critic, lambda_gp, lambda_dtw, g_optimizer, c_optimizer, device, image_path, model_path)
+                  n_critic, lambda_gp, lambda_dtw, g_optimizer, c_optimizer, device, image_path, model_path, lead_mins, lead_maxs)
     print(f"Model saved to: {model_path}/Model.pth")
 
 

@@ -13,21 +13,21 @@ import sys
 WGAN_PARENT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(WGAN_PARENT))
 from WGAN.preprocessing_utils import per_lead_minmax_scaling, per_lead_inverse_scaling, bandpass_filter, setup_filter
-from WGAN.UpsampleAndConv1D import Generator as UPConv
-from WGAN.BiLSTM_CNN import Generator as BiLSTM
-from WGAN.ConvTranspose1D import Generator as ConvT
+from CWGAN.UpsampleAndConv1D import Generator as UPConv
+from CWGAN.BiLSTM_CNN import Generator as BiLSTM
+from CWGAN.ConvTranspose1D import Generator as ConvT
 
 
 latent_dim: int = 100
 ecg_length: int = 128 * 5
 n_leads: int = 3
 
-GEN_UPCONV_CKPT = "WGAN/models/UpsampleAndCNN_WGAN/Model_0_GP_10.0_DTW_0.0/Model.pth"
-GEN_BILSTM_CKPT = "WGAN/models/BiLSTM_CNN_WGAN/Model_0_GP_10.0_DTW_0.0/Model.pth"
-GEN_CONVT_CKPT = "WGAN/models/DCNN_WGAN/Model_1_GP_10.0_DTW_0.0/Model.pth"
-GEN_UPCONV_DTW_CKPT = "WGAN/models/UpsampleAndCNN_WGAN/Model_0_GP_10.0_DTW_1.0/Model.pth"
-GEN_BILSTM_DTW_CKPT = "WGAN/models/BiLSTM_CNN_WGAN/Model_0_GP_10.0_DTW_1.0/Model.pth"
-GEN_CONVT_DTW_CKPT = "WGAN/models/DCNN_WGAN/Model_1_GP_10.0_DTW_1.0/Model.pth"
+GEN_UPCONV_CKPT = "CWGAN/models/UpsampleAndCNN_CWGAN/Model_0_GP_10.0_DTW_0.0/Model.pth"
+# GEN_BILSTM_CKPT = "WGAN/models/BiLSTM_CNN_WGAN/Model_0_GP_10.0_DTW_0.0/Model.pth"
+GEN_CONVT_CKPT = "CWGAN/models/DCNN_WGAN/Model_0_GP_10.0_DTW_0.0/Model.pth"
+GEN_UPCONV_DTW_CKPT = "CWGAN/models/UpsampleAndCNN_CWGAN/Model_0_GP_10.0_DTW_1.0/Model.pth"
+# GEN_BILSTM_DTW_CKPT = "WGAN/models/BiLSTM_CNN_WGAN/Model_0_GP_10.0_DTW_1.0/Model.pth"
+GEN_CONVT_DTW_CKPT = "CWGAN/models/DCNN_WGAN/Model_0_GP_10.0_DTW_1.0/Model.pth"
 
 
 @st.cache_resource(show_spinner=True)
@@ -64,12 +64,12 @@ def load_models_and_stats() -> Tuple[Dict[str, torch.nn.Module], np.ndarray, np.
     gen_up.eval()
     models['upconv'] = gen_up
 
-    gen_bi = BiLSTM().to(device)
-    ckpt_bi = torch.load(
-        GEN_BILSTM_CKPT, map_location=device, weights_only=False)
-    gen_bi.load_state_dict(ckpt_bi['gen_state_dict'])
-    gen_bi.eval()
-    models['bilstm'] = gen_bi
+    # gen_bi = BiLSTM().to(device)
+    # ckpt_bi = torch.load(
+    #     GEN_BILSTM_CKPT, map_location=device, weights_only=False)
+    # gen_bi.load_state_dict(ckpt_bi['gen_state_dict'])
+    # gen_bi.eval()
+    # models['bilstm'] = gen_bi
 
     gen_ct = ConvT().to(device)
     ckpt_ct = torch.load(
@@ -86,12 +86,12 @@ def load_models_and_stats() -> Tuple[Dict[str, torch.nn.Module], np.ndarray, np.
     gen_up_dtw.eval()
     models['upconv_dtw'] = gen_up_dtw
 
-    gen_bi_dtw = BiLSTM().to(device)
-    ckpt_bi_dtw = torch.load(
-        GEN_BILSTM_DTW_CKPT, map_location=device, weights_only=False)
-    gen_bi_dtw.load_state_dict(ckpt_bi_dtw['gen_state_dict'])
-    gen_bi_dtw.eval()
-    models['bilstm_dtw'] = gen_bi_dtw
+    # gen_bi_dtw = BiLSTM().to(device)
+    # ckpt_bi_dtw = torch.load(
+    #     GEN_BILSTM_DTW_CKPT, map_location=device, weights_only=False)
+    # gen_bi_dtw.load_state_dict(ckpt_bi_dtw['gen_state_dict'])
+    # gen_bi_dtw.eval()
+    # models['bilstm_dtw'] = gen_bi_dtw
 
     gen_ct_dtw = ConvT().to(device)
     ckpt_ct_dtw = torch.load(
@@ -113,10 +113,11 @@ def set_seed(seed: Optional[int]) -> None:
 
 
 @torch.no_grad()
-def generate_sample(generator: torch.nn.Module, device: torch.device, seed: Optional[int]) -> np.ndarray:
+def generate_sample(generator: torch.nn.Module, ecg_type: int, device: torch.device, seed: Optional[int]) -> np.ndarray:
     set_seed(seed)
     noise = torch.randn(1, latent_dim, device=device)
-    out: torch.Tensor = generator(noise)
+    label = torch.tensor([ecg_type], dtype=torch.long, device=device).unsqueeze(1)
+    out: torch.Tensor = generator(noise, label)
     return out.detach().cpu().numpy()
 
 
@@ -179,6 +180,8 @@ with st.sidebar:
         seed = st.number_input("Seed (Optional)", value=0, step=1)
         use_seed = st.checkbox("Use seed", value=False)
 
+        ecg_type = st.number_input("ECG Class", min_value=0,max_value=3,value=0,step=1)
+
         num_samples = st.number_input(
             "Generate N", min_value=1, max_value=16, value=1, step=1)
 
@@ -193,7 +196,7 @@ if submitted:
 
     samples: list[np.ndarray] = []
     for _ in range(int(num_samples)):
-        s = generate_sample(gen, device, seed_val)
+        s = generate_sample(gen, ecg_type, device, seed_val)
         s = standardize_sample_layout(s, model_name)
         samples.append(s)
 
@@ -202,6 +205,7 @@ if submitted:
         "model_name": model_name,
         "display_len": int(display_len),
         "seed": seed_val,
+        "ecg_type": ecg_type,
         "num_samples": int(num_samples),
     }
 
@@ -210,7 +214,7 @@ if st.session_state.last_settings is not None and len(st.session_state.last_samp
 
     st.subheader(
         f"Generated ECGs (run #{st.session_state.gen_counter}) | "
-        f"Model: {settings['model_name']} | Display: {settings['display_len']}"
+        f"Model: {settings['model_name']} | ECG Class: {settings['ecg_type']} | Display: {settings['display_len']}"
     )
 
     cols = st.columns(min(int(settings["num_samples"]), 4))
