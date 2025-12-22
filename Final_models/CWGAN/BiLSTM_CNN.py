@@ -13,7 +13,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
-from preprocessing_utils import per_lead_minmax_scaling, save_generated_ecg, gradient_penalty
+from WGAN.preprocessing_utils import per_lead_minmax_scaling, save_generated_ecg, gradient_penalty
 import pynvml
 import torch.nn.functional as F
 from WGAN.BiLSTM_CNN import Generator as WGAN_Gen
@@ -24,19 +24,6 @@ num_seconds = 5  # Number of seconds as input
 ecg_length = 128 * num_seconds  # Length of input ECG signals
 n_leads = 3  # Number of leads as input and to generate
 BATCH_SIZE = 128  # Batch size for dataset
-
-
-if os.path.exists("../../biased_ptbxl_ecgs.npy"):  # Check for the saved numpy file
-    # Load the saved numpy file
-    data = np.load("../../biased_ptbxl_ecgs.npy", allow_pickle=True)
-    normalized_data, lead_mins, lead_maxs = per_lead_minmax_scaling(data)
-# Create numpy array of each normalized ecg
-normalized_data = np.array(normalized_data)
-# Convert the numpy array to a torch tensor
-dataset_tensor = torch.tensor(normalized_data, dtype=torch.float32)
-dataloader = DataLoader(TensorDataset(dataset_tensor),
-                        # Create a dataset loader for training the model, shuffles on each epoch
-                        batch_size=BATCH_SIZE, shuffle=True, drop_last=True)
 
 
 class NoiseInjection(nn.Module):
@@ -76,12 +63,12 @@ class UpsampleBlock1d(nn.Module):
 
 
 class Generator(nn.Module):
-    def __init__(self, latent_dim=100, base_len=160, lstm_hidden=64, feat_dim=64):
+    def __init__(self, latent_dim=100, base_len=160, lstm_hidden=64, feat_dim=64, condition_dim=32):
         super().__init__()
         self.latent_dim = latent_dim
         self.base_len = base_len
         self.feat_dim = feat_dim
-        self.fc = nn.Linear(latent_dim, base_len * feat_dim)
+        self.fc = nn.Linear(latent_dim+condition_dim, base_len * feat_dim)
         self.bilstm: nn.LSTM = nn.LSTM(
             input_size=feat_dim,
             hidden_size=lstm_hidden,
@@ -102,6 +89,13 @@ class Generator(nn.Module):
         )
         self.tanh = nn.Tanh()
 
+        self.cond_block = nn.Sequential(
+            nn.Embedding(4, condition_dim),
+            nn.Linear(condition_dim, condition_dim),
+            nn.LeakyReLU(0.2, inplace=True)
+        )
+        self._init_weights()
+
     def _init_weights(self):
         # Conv / Linear
         for m in self.modules():
@@ -120,9 +114,11 @@ class Generator(nn.Module):
                 n = param.size(0) // 4
                 param.data[n:2*n].fill_(1.0)
 
-    def forward(self, z: torch.Tensor):
+    def forward(self, z: torch.Tensor, condition: torch.Tensor):
         B = z.size(0)
-        x: torch.Tensor = self.fc(z)
+        cond_emb = self.cond_block(condition.squeeze(1))
+        combined = torch.cat((z, cond_emb), dim=1)
+        x: torch.Tensor = self.fc(combined)
         x = x.view(B, self.base_len, self.feat_dim)
         x, _ = self.bilstm(x)
         x = x.permute(0, 2, 1)
@@ -170,6 +166,21 @@ class MiniBatchDiscrimination(nn.Module):
         return out
 
 
+class FiLM1D(nn.Module):
+    def __init__(self, channels: int, cond_dim: int, hidden: int = 64):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(cond_dim, hidden),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Linear(hidden, 2*channels)
+        )
+
+    def forward(self, x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+        gb = self.net(c)
+        g, b = gb.chunk(2, dim=1)
+        return x * (1.0 + g.unsqueeze(-1)) + b.unsqueeze(-1)
+
+
 class CriticConvBlock(nn.Module):
     def __init__(self, ch0, ch1, ch2, kernel_size=16, stride=1, padding='same'):
         super().__init__()
@@ -181,10 +192,8 @@ class CriticConvBlock(nn.Module):
         self.act = nn.LeakyReLU(negative_slope=0.3, inplace=True)
 
     def forward(self, x):
-        x = self.conv1(x)
-        x = self.act(x)
-        x = self.conv2(x)
-        x = self.act(x)
+        x = self.act(self.conv1(x))
+        x = self.act(self.conv2(x))
         x = self.pool(x)
         return x
 
@@ -196,21 +205,39 @@ class Critic(nn.Module):
     Uses minibatch discrimination layer for prevention of mode collapse.
     '''
 
-    def __init__(self, ecg_length=640, n_leads=3, num_kernel=50, dim_kernel=10):
+    def __init__(self, ecg_length=640, n_leads=3, num_kernel=50, dim_kernel=10, num_classes=4, condition_dim=32, concat_condition=True):
         super().__init__()
         self.ecg_length = ecg_length
         self.n_leads = n_leads
-        blocks = []
-        blocks.append(CriticConvBlock(n_leads, 32, 64))
-        blocks.append(CriticConvBlock(64, 128, 256))
-        self.conv_block = nn.Sequential(*blocks)
+        self.condition_dim = condition_dim
+        self.concat_condition = concat_condition
+        self.cond_block = nn.Sequential(
+            nn.Embedding(num_classes, condition_dim),
+            nn.Linear(condition_dim, condition_dim),
+            nn.LeakyReLU(0.2, inplace=True)
+        )
+        self.block1 = CriticConvBlock(n_leads, 32, 64)
+        self.block2 = CriticConvBlock(64, 128, 256)
+        self.film1 = FiLM1D(channels=64, cond_dim=condition_dim, hidden=64)
+        self.film2 = FiLM1D(channels=256, cond_dim=condition_dim, hidden=64)
         with torch.no_grad():
             dummy = torch.zeros(1, n_leads, ecg_length)
-            h = self.conv_block(dummy)
+            c_dummy = torch.zeros(1, dtype=torch.long)
+            c_vec = self.cond_block(c_dummy)
+            h = self.block1(dummy)
+            h = self.film1(h, c_vec)
+            h = self.block2(h)
+            h = self.film2(h, c_vec)
             flatten_dim = h.view(1, -1).size(1)
         self.minibatch = MiniBatchDiscrimination(
-            input_dim=flatten_dim, num_kernel=50, dim_kernel=10)
-        self.fc = nn.Linear(flatten_dim+num_kernel, 1)
+            input_dim=flatten_dim,
+            num_kernel=num_kernel,
+            dim_kernel=dim_kernel
+        )
+        fc_in = flatten_dim+num_kernel
+        if self.concat_condition:
+            fc_in += condition_dim
+        self.fc = nn.Linear(fc_in, 1)
 
     def _init_weights(self):
         for m in self.modules():
@@ -223,14 +250,49 @@ class Critic(nn.Module):
                 nn.init.normal_(m.weight, mean=0.0, std=0.02)
                 nn.init.zeros_(m.bias)
 
-    def forward(self, x):
-        if x.shape[1] == self.ecg_length and x.shape[2] == self.n_leads:
+    def forward(self, x: torch.Tensor, condition: torch.Tensor):
+        if condition.dim() == 2 and condition.size(1) == 1:
+            condition = condition.squeeze(1)
+        c_vec = self.cond_block(condition)
+        if x.dim() == 3 and x.shape[1] == self.ecg_length and x.shape[2] == self.n_leads:
             x = x.permute(0, 2, 1)
-        x = self.conv_block(x)
+        x = self.block1(x)
+        x = self.film1(x, c_vec)
+        x = self.block2(x)
+        x = self.film2(x, c_vec)
         x = x.view(x.size(0), -1)
         x = self.minibatch(x)
-        x = self.fc(x)
-        return x
+        if self.concat_condition:
+            x = torch.cat([x, c_vec], dim=1)
+        return self.fc(x)
+
+
+def load_wgan_to_cwgan_generator(wgan_gen: WGAN_Gen, cwgan_gen: Generator, latent_dim: int):
+    wgan_sd = wgan_gen.state_dict()
+    cwgan_sd = cwgan_gen.state_dict()
+    compatible = {}
+    for k, v in wgan_sd.items():
+        if k in cwgan_sd and cwgan_sd[k].shape == v.shape:
+            compatible[k] = v
+    cwgan_gen.load_state_dict(compatible, strict=False)
+    with torch.no_grad():
+        cwgan_gen.fc.weight[:, :latent_dim].copy_(wgan_sd["fc.weight"])
+        cwgan_gen.fc.bias.copy_(wgan_sd["fc.bias"])
+    return cwgan_gen
+
+
+def load_wgan_to_cwgan_critic(wgan_critic: WGAN_Critic, cwgan_critic: Critic):
+    wgan_sd = wgan_critic.state_dict()
+    wgan_sd_filtered = {k: v for k, v in wgan_sd.items() if k not in [
+        "fc.weight"]}
+    cwgan_critic.load_state_dict(wgan_sd_filtered, strict=False)
+    with torch.no_grad():
+        w_fc_w = wgan_sd["fc.weight"]
+        w_fc_b = wgan_sd["fc.bias"]
+        in_w = w_fc_w.shape[1]
+        cwgan_critic.fc.weight[:, :in_w].copy_(w_fc_w)
+        cwgan_critic.fc.bias.copy_(w_fc_b)
+    return cwgan_critic
 
 
 def flatten_ecg(x):
@@ -244,7 +306,7 @@ def downsample_for_dtw(x, factor=4):
     return x.permute(0, 2, 1)
 
 
-def train_wgan_gp(generator, critic, dataloader, num_epochs, latent_dim, n_critic, lambda_gp, lambda_dtw, g_optimizer, c_optimizer, device, image_path, model_path):
+def train_wgan_gp(generator, critic, dataloader, num_epochs, latent_dim, n_critic, lambda_gp, lambda_dtw, g_optimizer, c_optimizer, device, image_path, model_path, lead_maxs, lead_mins):
     '''
     Training loop for the WGAN with gradient penalty model. Trains for the number of epochs
     specified using the optimizers provided for the generator and critic. Creates a noise
@@ -284,7 +346,6 @@ def train_wgan_gp(generator, critic, dataloader, num_epochs, latent_dim, n_criti
     }
     dtw = SoftDTW(gamma=1.0, normalize=True)
     mmd = MMD(var=1.0, device=device)
-    subset = min(32, BATCH_SIZE)
     for epoch in range(num_epochs):  # Train for number of epochs
         # Take start time for epoch start to track time per epoch
         start_time_epoch = time.time()
@@ -298,38 +359,39 @@ def train_wgan_gp(generator, critic, dataloader, num_epochs, latent_dim, n_criti
         power_readings = []
         mmd.reset()
         # Loop for steps per epoch and grab data from the dataloader
-        for i, (real_ecg,) in enumerate(dataloader):
+        for i, (real_ecg, labels) in enumerate(dataloader):
             # Take start time for step start to track time per step
             start_time_step = time.time()
             real_ecg = real_ecg.to(device)  # Send real sample to GPU
+            labels = labels.to(device)
             # Get batch size value from the real sample shape
             batch_size = real_ecg.size(0)
             for _ in range(n_critic):  # Train critic n times
                 # Create noise of shape (batch_size, latent_dim) latent_dim=50
                 noise = torch.randn(batch_size, latent_dim, device=device)
-                fake_ecg = generator(noise)  # Generate fake samples
+                fake_ecg = generator(noise, labels)  # Generate fake samples
                 c_optimizer.zero_grad()  # Set critic optimizer gradients to zero
-                critic_real = critic(real_ecg)
+                critic_real = critic(real_ecg, labels)
                 fake_ecg = fake_ecg.permute(0, 2, 1)
-                critic_fake = critic(fake_ecg.detach())
+                critic_fake = critic(fake_ecg.detach(), labels)
                 # Critic Wasserstein loss calculation
                 loss_critic = critic_fake.mean() - critic_real.mean()
                 # Calculate the gradient penalty for real and fake ecg samples
                 gp = gradient_penalty(
-                    critic, real_ecg, fake_ecg, device=device)
+                    critic, real_ecg, fake_ecg, device=device, labels=labels)
                 # Modify the critic loss based on the gradient penalty
                 loss_critic = loss_critic + (lambda_gp * gp)
                 loss_critic.backward()  # Calculate gradients for critic
                 c_optimizer.step()  # Update parameters for critic
             # Create new set of noises of shape (batch_size, latent_dim) latent_dim=50
             noise = torch.randn(batch_size, latent_dim, device=device)
-            fake_ecg = generator(noise)  # Generate fake samples
+            fake_ecg = generator(noise, labels)  # Generate fake samples
             g_optimizer.zero_grad()  # Set generator optimizer gradients to zero for backpropagation
             fake_ecg = fake_ecg.permute(0, 2, 1)
-            critic_fake = critic(fake_ecg)  # Use critic to train generator
+            # Use critic to train generator
+            critic_fake = critic(fake_ecg, labels)
             loss_generator = -critic_fake.mean()  # Generator Wasserstein loss
             # Compute the mvDTW loss figure
-            # idx = torch.randperm(batch_size, device=device)[:subset]
             fake_sub = downsample_for_dtw(fake_ecg, factor=4)
             real_sub = downsample_for_dtw(real_ecg, factor=4)
             mvDTW_value = dtw(fake_sub, real_sub).mean()
@@ -340,8 +402,6 @@ def train_wgan_gp(generator, critic, dataloader, num_epochs, latent_dim, n_criti
                 fake_flat = fake_flat.to(device, dtype=torch.float32)
                 real_flat = real_flat.to(device, dtype=torch.float32)
                 mmd.update((fake_flat, real_flat))
-            # mvdTW_value = compute_mvdTW(
-            #     real_ecg, fake_ecg, metric_lib=metric_lib)  # Calcualte mvdtw
             # Calculate full generator loss
             loss_generator = loss_generator + \
                 (lambda_dtw * mvDTW_value)
@@ -349,7 +409,6 @@ def train_wgan_gp(generator, critic, dataloader, num_epochs, latent_dim, n_criti
             g_optimizer.step()  # Update parameters for generator
             # Compute the maximum mean discrepancy metric
             mmd_step = mmd.compute()
-            # mmd_value = compute_mmd(real_ecg, fake_ecg, metric_lib=metric_lib)
             wgap = critic_real.mean().item() - critic_fake.mean().item()
             # Add calculated values to accumulation variables
             running_c_loss += loss_critic.item()
@@ -371,7 +430,7 @@ def train_wgan_gp(generator, critic, dataloader, num_epochs, latent_dim, n_criti
         avg_gpu_power = sum(power_readings)/len(power_readings)
         save_generated_ecg(generator, epoch,
                            # Save images of each generated lead
-                           device, latent_dim=latent_dim, save_path=image_path, lead_maxs=lead_maxs, lead_mins=lead_mins, num_classes=0)
+                           device, latent_dim=latent_dim, save_path=image_path, lead_maxs=lead_maxs, lead_mins=lead_mins, num_classes=4)
         # Calculate average metrics for epoch
         gen_loss_epoch = running_g_loss / len(dataloader)
         critic_loss_epoch = running_c_loss / len(dataloader)
@@ -406,9 +465,33 @@ def train_wgan_gp(generator, critic, dataloader, num_epochs, latent_dim, n_criti
 
 def main():
     # Set GPU device availability
+    if os.path.exists("../fine_tune_data.npy"):  # Check for the saved numpy file
+        # Load the saved numpy file
+        data = np.load("../fine_tune_data.npy", allow_pickle=True)
+        segments = [item[0] for item in data]
+        ecg_dataset = np.stack(segments)
+        normalized_data, lead_mins, lead_maxs = per_lead_minmax_scaling(
+            ecg_dataset)
+        labels = [item[1] for item in data]
+    labels = np.array(labels)
+    # Create numpy array of each normalized ecg
+    normalized_data = np.array(normalized_data)
+    # Convert the numpy array to a torch tensor
+    dataset_tensor = torch.tensor(normalized_data, dtype=torch.float32)
+    labels_tensor = torch.tensor(labels, dtype=torch.long).unsqueeze(1)
+    dataloader = DataLoader(TensorDataset(dataset_tensor, labels_tensor),
+                            # Create a dataset loader for training the model, shuffles on each epoch
+                            batch_size=BATCH_SIZE, shuffle=True, drop_last=True)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    wgan_gen = WGAN_Gen().to(device)
+    wgan_critic = WGAN_Critic().to(device)
+    ckpt = torch.load(
+        "WGAN/models/BiLSTM_CNN_WGAN/Model_0_GP_10.0_DTW_0.0/Model.pth", weights_only=False)
+    wgan_gen.load_state_dict(ckpt['gen_state_dict'])
+    wgan_critic.load_state_dict(ckpt['critic_state_dict'])
     num_epochs = 50  # Number of epochs
-    n_critic = 5  # Number of times critic is trained (default=5)
+    n_critic = 3  # Number of times critic is trained (default=5)
     lambda_gp = 10.0  # Gradient penalty modifier hyperparameter (default=10.0)
     # Dynamic time warping modifier hyperparameter (default=0.1)
     lambda_dtw = 1.0
@@ -416,23 +499,27 @@ def main():
     generator = Generator(latent_dim=latent_dim).to(device)
     critic = Critic(ecg_length=ecg_length, n_leads=n_leads).to(
         device)  # Create critic model and send to GPU
+    generator = load_wgan_to_cwgan_generator(
+        wgan_gen=wgan_gen, cwgan_gen=generator, latent_dim=latent_dim)
+    critic = load_wgan_to_cwgan_critic(
+        wgan_critic=wgan_critic, cwgan_critic=critic)
     g_optimizer = optim.Adam(generator.parameters(),
                              lr=2e-4, betas=[0.0, 0.9])
     c_optimizer = optim.Adam(critic.parameters(), lr=1e-4, betas=[0.0, 0.9])
-    while os.path.exists(f"images/BiLSTM_CNN_WGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"):
+    while os.path.exists(f"CWGAN/images/BiLSTM_CNN_CWGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"):
         GAN_model_num += 1
-    image_path = f"images/BiLSTM_CNN_WGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"
+    image_path = f"CWGAN/images/BiLSTM_CNN_CWGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"
     os.makedirs(image_path)  # Create new folder for the images to be saved to
     GAN_model_num = 0  # Reset folder index number for model saving
     # Check for folder number availability
-    while os.path.exists(f"models/BiLSTM_CNN_WGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"):
+    while os.path.exists(f"CWGAN/models/BiLSTM_CNN_CWGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"):
         GAN_model_num += 1  # Increment model number for folder naming
     # Assign path for model to be saved to
-    model_path = f"models/BiLSTM_CNN_WGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"
+    model_path = f"CWGAN/models/BiLSTM_CNN_CWGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"
     os.makedirs(model_path)  # Create new folder for the models to be saved to
     train_wgan_gp(generator, critic, dataloader, num_epochs, latent_dim,
                   # Begin training loop
-                  n_critic, lambda_gp, lambda_dtw, g_optimizer, c_optimizer, device, image_path, model_path)
+                  n_critic, lambda_gp, lambda_dtw, g_optimizer, c_optimizer, device, image_path, model_path, lead_maxs, lead_mins)
     print(f"Model saved to: {model_path}/Model.pth")
 
 
