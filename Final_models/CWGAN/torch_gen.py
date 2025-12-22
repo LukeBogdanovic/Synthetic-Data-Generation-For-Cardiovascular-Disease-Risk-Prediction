@@ -142,8 +142,6 @@ def make_plot(sample: np.ndarray, lead_mins, lead_maxs, model_name: str, display
     display_len = int(max(128, min(T, display_len)))
 
     fig, axs = plt.subplots(n_leads, 1, figsize=(10, 8), sharex=True, dpi=150)
-    # fig.suptitle(
-    #     f"Model: {model_name} | Display: {display_len} samples", fontsize=12)
 
     lead_labels = ["Lead III", "Lead V3", "Lead V5"]
     x = np.arange(display_len)
@@ -162,6 +160,7 @@ st.set_page_config(page_title="ECG Generator", layout="wide")
 st.title("ECG Generator")
 
 models, lead_mins, lead_maxs, device = load_models_and_stats()
+ecg_classes:dict[str,int] = {'Normal Sinus Rhythm':0,'Myocardial Infarction':1,'Stroke':2,'Syncope':3}
 b, a = setup_bp_filter()
 
 if "gen_counter" not in st.session_state:
@@ -170,6 +169,8 @@ if "last_samples" not in st.session_state:
     st.session_state.last_samples = []  # type: ignore[assignment]
 if "last_settings" not in st.session_state:
     st.session_state.last_settings = None  # type: ignore[assignment]
+
+
 
 with st.sidebar:
     st.header("Controls")
@@ -180,7 +181,7 @@ with st.sidebar:
         seed = st.number_input("Seed (Optional)", value=0, step=1)
         use_seed = st.checkbox("Use seed", value=False)
 
-        ecg_type = st.number_input("ECG Class", min_value=0,max_value=3,value=0,step=1)
+        ecg_label = st.selectbox("ECG Class", options=list(ecg_classes.keys()))
 
         num_samples = st.number_input(
             "Generate N", min_value=1, max_value=16, value=1, step=1)
@@ -194,6 +195,8 @@ if submitted:
 
     gen = models[model_name]
 
+    ecg_type: int = ecg_classes[ecg_label]
+
     samples: list[np.ndarray] = []
     for _ in range(int(num_samples)):
         s = generate_sample(gen, ecg_type, device, seed_val)
@@ -206,6 +209,7 @@ if submitted:
         "display_len": int(display_len),
         "seed": seed_val,
         "ecg_type": ecg_type,
+        "ecg_label": ecg_label,
         "num_samples": int(num_samples),
     }
 
@@ -214,7 +218,7 @@ if st.session_state.last_settings is not None and len(st.session_state.last_samp
 
     st.subheader(
         f"Generated ECGs (run #{st.session_state.gen_counter}) | "
-        f"Model: {settings['model_name']} | ECG Class: {settings['ecg_type']} | Display: {settings['display_len']} Samples"
+        f"Model: {settings['model_name']} | ECG Class: {settings['ecg_label']} | Display: {settings['display_len']} Samples"
     )
 
     cols = st.columns(min(int(settings["num_samples"]), 4))

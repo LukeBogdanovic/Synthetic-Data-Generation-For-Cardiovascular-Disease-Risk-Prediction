@@ -7,6 +7,8 @@ import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 import streamlit as st
 
+plt.rcParams.update({"fontsize":16})
+
 from pathlib import Path
 import sys
 
