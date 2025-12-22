@@ -25,6 +25,9 @@ n_leads: int = 3
 GEN_UPCONV_CKPT = "WGAN/models/UpsampleAndCNN_WGAN/Model_0_GP_10.0_DTW_0.0/Model.pth"
 GEN_BILSTM_CKPT = "WGAN/models/BiLSTM_CNN_WGAN/Model_0_GP_10.0_DTW_0.0/Model.pth"
 GEN_CONVT_CKPT = "WGAN/models/DCNN_WGAN/Model_1_GP_10.0_DTW_0.0/Model.pth"
+GEN_UPCONV_DTW_CKPT = "WGAN/models/UpsampleAndCNN_WGAN/Model_0_GP_10.0_DTW_1.0/Model.pth"
+GEN_BILSTM_DTW_CKPT = "WGAN/models/BiLSTM_CNN_WGAN/Model_0_GP_10.0_DTW_1.0/Model.pth"
+GEN_CONVT_DTW_CKPT = "WGAN/models/DCNN_WGAN/Model_1_GP_10.0_DTW_1.0/Model.pth"
 
 
 @st.cache_resource(show_spinner=True)
@@ -75,6 +78,28 @@ def load_models_and_stats() -> Tuple[Dict[str, torch.nn.Module], np.ndarray, np.
     gen_ct.eval()
     models['dcnn'] = gen_ct
 
+    gen_up_dtw = UPConv(ecg_length=ecg_length, n_leads=n_leads,
+                    latent_dim=latent_dim).to(device)
+    ckpt_up_dtw = torch.load(
+        GEN_UPCONV_DTW_CKPT, map_location=device, weights_only=False)
+    gen_up_dtw.load_state_dict(ckpt_up_dtw['gen_state_dict'])
+    gen_up_dtw.eval()
+    models['upconv_dtw'] = gen_up_dtw
+
+    gen_bi_dtw = BiLSTM().to(device)
+    ckpt_bi_dtw = torch.load(
+        GEN_BILSTM_DTW_CKPT, map_location=device, weights_only=False)
+    gen_bi_dtw.load_state_dict(ckpt_bi_dtw['gen_state_dict'])
+    gen_bi_dtw.eval()
+    models['bilstm_dtw'] = gen_bi_dtw
+
+    gen_ct_dtw = ConvT().to(device)
+    ckpt_ct_dtw = torch.load(
+        GEN_CONVT_DTW_CKPT, map_location=device, weights_only=False)
+    gen_ct_dtw.load_state_dict(ckpt_ct_dtw['gen_state_dict'])
+    gen_ct_dtw.eval()
+    models['dcnn_dtw'] = gen_ct_dtw
+
     return models, lead_mins, lead_maxs, device
 
 
@@ -115,19 +140,19 @@ def make_plot(sample: np.ndarray, lead_mins, lead_maxs, model_name: str, display
     T = sample.shape[0]
     display_len = int(max(128, min(T, display_len)))
 
-    fig, axs = plt.subplots(n_leads, 1, figsize=(10, 8), sharex=True)
-    fig.suptitle(
-        f"Model: {model_name} | Display: {display_len} samples", fontsize=12)
+    fig, axs = plt.subplots(n_leads, 1, figsize=(10, 8), sharex=True, dpi=150)
+    # fig.suptitle(
+    #     f"Model: {model_name} | Display: {display_len} samples", fontsize=12)
 
     lead_labels = ["Lead III", "Lead V3", "Lead V5"]
     x = np.arange(display_len)
 
     for i, ax in enumerate(axs):
-        ax.plot(x, sample[:display_len, i])
+        ax.plot(x, sample[:display_len, i], linewidth=2.0)
         ax.set_title(lead_labels[i])
         ax.set_xlabel("Time (samples)")
         ax.set_ylabel("Amplitude (mV)")
-        ax.grid(True)
+        ax.grid(True, alpha=0.5)
     fig.tight_layout()
     return fig
 
