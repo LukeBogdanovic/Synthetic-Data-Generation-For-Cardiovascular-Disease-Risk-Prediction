@@ -487,7 +487,7 @@ def main():
     wgan_gen = WGAN_Gen().to(device)
     wgan_critic = WGAN_Critic().to(device)
     ckpt = torch.load(
-        "WGAN/models/BiLSTM_CNN_WGAN/Model_0_GP_10.0_DTW_0.0/Model.pth", weights_only=False)
+        "WGAN/models/BiLSTM_CNN_WGAN/Model_0_GP_10.0_DTW_1.0/Model.pth", weights_only=False)
     wgan_gen.load_state_dict(ckpt['gen_state_dict'])
     wgan_critic.load_state_dict(ckpt['critic_state_dict'])
     num_epochs = 50  # Number of epochs

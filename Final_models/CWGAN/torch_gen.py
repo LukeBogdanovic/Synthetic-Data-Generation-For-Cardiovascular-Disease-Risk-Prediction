@@ -7,6 +7,8 @@ import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 import streamlit as st
 
+plt.rcParams.update({"font.size":16})
+
 from pathlib import Path
 import sys
 
@@ -23,11 +25,11 @@ ecg_length: int = 128 * 5
 n_leads: int = 3
 
 GEN_UPCONV_CKPT = "CWGAN/models/UpsampleAndCNN_CWGAN/Model_0_GP_10.0_DTW_0.0/Model.pth"
-# GEN_BILSTM_CKPT = "WGAN/models/BiLSTM_CNN_WGAN/Model_0_GP_10.0_DTW_0.0/Model.pth"
+GEN_BILSTM_CKPT = "CWGAN/models/BiLSTM_CNN_CWGAN/Model_0_GP_10.0_DTW_0.0/Model.pth"
 GEN_CONVT_CKPT = "CWGAN/models/DCNN_WGAN/Model_0_GP_10.0_DTW_0.0/Model.pth"
-GEN_UPCONV_DTW_CKPT = "CWGAN/models/UpsampleAndCNN_CWGAN/Model_0_GP_10.0_DTW_1.0/Model.pth"
-# GEN_BILSTM_DTW_CKPT = "WGAN/models/BiLSTM_CNN_WGAN/Model_0_GP_10.0_DTW_1.0/Model.pth"
-GEN_CONVT_DTW_CKPT = "CWGAN/models/DCNN_WGAN/Model_0_GP_10.0_DTW_1.0/Model.pth"
+GEN_UPCONV_DTW_CKPT = "CWGAN/models/UpsampleAndCNN_CWGAN/Model_1_GP_10.0_DTW_1.0/Model.pth"
+GEN_BILSTM_DTW_CKPT = "CWGAN/models/BiLSTM_CNN_CWGAN/Model_1_GP_10.0_DTW_1.0/Model.pth"
+GEN_CONVT_DTW_CKPT = "CWGAN/models/DCNN_WGAN/Model_1_GP_10.0_DTW_1.0/Model.pth"
 
 
 @st.cache_resource(show_spinner=True)
@@ -64,12 +66,12 @@ def load_models_and_stats() -> Tuple[Dict[str, torch.nn.Module], np.ndarray, np.
     gen_up.eval()
     models['upconv'] = gen_up
 
-    # gen_bi = BiLSTM().to(device)
-    # ckpt_bi = torch.load(
-    #     GEN_BILSTM_CKPT, map_location=device, weights_only=False)
-    # gen_bi.load_state_dict(ckpt_bi['gen_state_dict'])
-    # gen_bi.eval()
-    # models['bilstm'] = gen_bi
+    gen_bi = BiLSTM().to(device)
+    ckpt_bi = torch.load(
+        GEN_BILSTM_CKPT, map_location=device, weights_only=False)
+    gen_bi.load_state_dict(ckpt_bi['gen_state_dict'])
+    gen_bi.eval()
+    models['bilstm'] = gen_bi
 
     gen_ct = ConvT().to(device)
     ckpt_ct = torch.load(
@@ -86,12 +88,12 @@ def load_models_and_stats() -> Tuple[Dict[str, torch.nn.Module], np.ndarray, np.
     gen_up_dtw.eval()
     models['upconv_dtw'] = gen_up_dtw
 
-    # gen_bi_dtw = BiLSTM().to(device)
-    # ckpt_bi_dtw = torch.load(
-    #     GEN_BILSTM_DTW_CKPT, map_location=device, weights_only=False)
-    # gen_bi_dtw.load_state_dict(ckpt_bi_dtw['gen_state_dict'])
-    # gen_bi_dtw.eval()
-    # models['bilstm_dtw'] = gen_bi_dtw
+    gen_bi_dtw = BiLSTM().to(device)
+    ckpt_bi_dtw = torch.load(
+        GEN_BILSTM_DTW_CKPT, map_location=device, weights_only=False)
+    gen_bi_dtw.load_state_dict(ckpt_bi_dtw['gen_state_dict'])
+    gen_bi_dtw.eval()
+    models['bilstm_dtw'] = gen_bi_dtw
 
     gen_ct_dtw = ConvT().to(device)
     ckpt_ct_dtw = torch.load(
@@ -123,11 +125,9 @@ def generate_sample(generator: torch.nn.Module, ecg_type: int, device: torch.dev
 
 def standardize_sample_layout(sample: np.ndarray, model_name: str) -> np.ndarray:
     """Ensure sample is (B, T, leads) for downstream inverse-scaling/plotting."""
-    # BiLSTM generator outputs (B, leads, T)
     if model_name == "bilstm":
         sample = np.transpose(sample, (0, 2, 1))
 
-    # If anything else outputs (B, leads, T), auto-detect and fix
     if sample.ndim == 3 and sample.shape[-1] != n_leads and sample.shape[1] == n_leads:
         sample = np.transpose(sample, (0, 2, 1))
 
@@ -159,7 +159,7 @@ def make_plot(sample: np.ndarray, lead_mins, lead_maxs, model_name: str, display
 
 
 st.set_page_config(page_title="ECG Generator", layout="wide")
-st.title("ECG Generator UI")
+st.title("ECG Generator")
 
 models, lead_mins, lead_maxs, device = load_models_and_stats()
 b, a = setup_bp_filter()
@@ -214,7 +214,7 @@ if st.session_state.last_settings is not None and len(st.session_state.last_samp
 
     st.subheader(
         f"Generated ECGs (run #{st.session_state.gen_counter}) | "
-        f"Model: {settings['model_name']} | ECG Class: {settings['ecg_type']} | Display: {settings['display_len']}"
+        f"Model: {settings['model_name']} | ECG Class: {settings['ecg_type']} | Display: {settings['display_len']} Samples"
     )
 
     cols = st.columns(min(int(settings["num_samples"]), 4))

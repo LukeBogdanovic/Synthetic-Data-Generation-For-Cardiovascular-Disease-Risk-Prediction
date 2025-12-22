@@ -418,6 +418,7 @@ def save_generated_ecg(generator, epoch, device, lead_mins, lead_maxs, latent_di
         else:  # For WGAN
             gen_ecg = generator(noise).cpu().numpy()
     # Reverse the normalization done to ECG signals before training
+    print(gen_ecg.shape)
     gen_ecg = per_lead_inverse_scaling(gen_ecg, lead_mins, lead_maxs)
     gen_ecg = gen_ecg.squeeze(0)
     # Post-process bandpass filter
