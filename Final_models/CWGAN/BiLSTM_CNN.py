@@ -13,11 +13,11 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
-from WGAN.preprocessing_utils import per_lead_minmax_scaling, save_generated_ecg, gradient_penalty
+from Final_models.WGAN.preprocessing_utils import per_lead_minmax_scaling, save_generated_ecg, gradient_penalty
 import pynvml
 import torch.nn.functional as F
-from WGAN.BiLSTM_CNN import Generator as WGAN_Gen
-from WGAN.BiLSTM_CNN import Critic as WGAN_Critic
+from Final_models.WGAN.BiLSTM_CNN import Generator as WGAN_Gen
+from Final_models.WGAN.BiLSTM_CNN import Critic as WGAN_Critic
 
 latent_dim = 100  # Latent space/noise dimension
 num_seconds = 5  # Number of seconds as input

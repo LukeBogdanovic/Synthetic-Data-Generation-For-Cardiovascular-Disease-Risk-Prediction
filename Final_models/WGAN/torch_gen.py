@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 import streamlit as st
 
-plt.rcParams.update({"fontsize":16})
+plt.rcParams.update({"font.size":16})
 
 from pathlib import Path
 import sys
@@ -117,7 +117,6 @@ def set_seed(seed: Optional[int]) -> None:
 @torch.no_grad()
 def generate_sample(generator: torch.nn.Module, device: torch.device, seed: Optional[int]) -> np.ndarray:
     set_seed(seed)
-    noise = torch.randn(1, latent_dim, device=device)
     out: torch.Tensor = generator(noise)
     return out.detach().cpu().numpy()
 
@@ -187,6 +186,7 @@ with st.sidebar:
         submitted = st.form_submit_button("Generate")
 
 seed_val: Optional[int] = int(seed) if use_seed else None
+noise = torch.randn(1, latent_dim, device=device)
 
 if submitted:
     st.session_state.gen_counter += 1

@@ -14,7 +14,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
-from WGAN.preprocessing_utils import per_lead_minmax_scaling, save_generated_ecg, gradient_penalty
+from Final_models.WGAN.preprocessing_utils import per_lead_minmax_scaling, save_generated_ecg, gradient_penalty
 import pynvml
 import torch.nn.functional as F
 
