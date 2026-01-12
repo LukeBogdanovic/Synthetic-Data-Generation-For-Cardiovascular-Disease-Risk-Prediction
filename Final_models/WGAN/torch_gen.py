@@ -12,24 +12,24 @@ plt.rcParams.update({"fontsize":16})
 from pathlib import Path
 import sys
 
-WGAN_PARENT = Path(__file__).resolve().parent.parent
+WGAN_PARENT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(WGAN_PARENT))
-from WGAN.preprocessing_utils import per_lead_minmax_scaling, per_lead_inverse_scaling, bandpass_filter, setup_filter
-from WGAN.UpsampleAndConv1D import Generator as UPConv
-from WGAN.BiLSTM_CNN import Generator as BiLSTM
-from WGAN.ConvTranspose1D import Generator as ConvT
+from Final_models.WGAN.preprocessing_utils import per_lead_minmax_scaling, per_lead_inverse_scaling, bandpass_filter, setup_filter
+from Final_models.WGAN.UpsampleAndConv1D import Generator as UPConv
+from Final_models.WGAN.BiLSTM_CNN import Generator as BiLSTM
+from Final_models.WGAN.ConvTranspose1D import Generator as ConvT
 
 
 latent_dim: int = 100
 ecg_length: int = 128 * 5
 n_leads: int = 3
 
-GEN_UPCONV_CKPT = "WGAN/models/UpsampleAndCNN_WGAN/Model_0_GP_10.0_DTW_0.0/Model.pth"
-GEN_BILSTM_CKPT = "WGAN/models/BiLSTM_CNN_WGAN/Model_0_GP_10.0_DTW_0.0/Model.pth"
-GEN_CONVT_CKPT = "WGAN/models/DCNN_WGAN/Model_1_GP_10.0_DTW_0.0/Model.pth"
-GEN_UPCONV_DTW_CKPT = "WGAN/models/UpsampleAndCNN_WGAN/Model_0_GP_10.0_DTW_1.0/Model.pth"
-GEN_BILSTM_DTW_CKPT = "WGAN/models/BiLSTM_CNN_WGAN/Model_0_GP_10.0_DTW_1.0/Model.pth"
-GEN_CONVT_DTW_CKPT = "WGAN/models/DCNN_WGAN/Model_1_GP_10.0_DTW_1.0/Model.pth"
+GEN_UPCONV_CKPT = "Final_models/WGAN/models/UpsampleAndCNN_WGAN/Model_0_GP_10.0_DTW_0.0/Model.pth"
+GEN_BILSTM_CKPT = "Final_models/WGAN/models/BiLSTM_CNN_WGAN/Model_0_GP_10.0_DTW_0.0/Model.pth"
+GEN_CONVT_CKPT = "Final_models/WGAN/models/DCNN_WGAN/Model_1_GP_10.0_DTW_0.0/Model.pth"
+GEN_UPCONV_DTW_CKPT = "Final_models/WGAN/models/UpsampleAndCNN_WGAN/Model_0_GP_10.0_DTW_1.0/Model.pth"
+GEN_BILSTM_DTW_CKPT = "Final_models/WGAN/models/BiLSTM_CNN_WGAN/Model_0_GP_10.0_DTW_1.0/Model.pth"
+GEN_CONVT_DTW_CKPT = "Final_models/WGAN/models/DCNN_WGAN/Model_1_GP_10.0_DTW_1.0/Model.pth"
 
 
 @st.cache_resource(show_spinner=True)
@@ -55,7 +55,7 @@ def load_lead_minmax(path: str) -> Tuple[np.ndarray, np.ndarray]:
 @st.cache_resource(show_spinner=True)
 def load_models_and_stats() -> Tuple[Dict[str, torch.nn.Module], np.ndarray, np.ndarray, torch.device]:
     device = get_device()
-    lead_mins, lead_maxs = load_lead_minmax("../biased_ptbxl_ecgs.npy")
+    lead_mins, lead_maxs = load_lead_minmax("biased_ptbxl_ecgs.npy")
     models: Dict[str, torch.nn.Module] = {}
 
     gen_up = UPConv(ecg_length=ecg_length, n_leads=n_leads,
