@@ -12,24 +12,24 @@ plt.rcParams.update({"font.size":16})
 from pathlib import Path
 import sys
 
-WGAN_PARENT = Path(__file__).resolve().parent.parent.parent
+WGAN_PARENT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(WGAN_PARENT))
-from Final_models.WGAN.preprocessing_utils import per_lead_minmax_scaling, per_lead_inverse_scaling, bandpass_filter, setup_filter
-from Final_models.CWGAN.UpsampleAndConv1D import Generator as UPConv
-from Final_models.CWGAN.BiLSTM_CNN import Generator as BiLSTM
-from Final_models.CWGAN.ConvTranspose1D import Generator as ConvT
+from WGAN.preprocessing_utils import per_lead_minmax_scaling, per_lead_inverse_scaling, bandpass_filter, setup_filter
+from CWGAN.UpsampleAndConv1D import Generator as UPConv
+from CWGAN.BiLSTM_CNN import Generator as BiLSTM
+from CWGAN.ConvTranspose1D import Generator as ConvT
 
 
 latent_dim: int = 100
 ecg_length: int = 128 * 5
 n_leads: int = 3
 
-GEN_UPCONV_CKPT = "Final_models/CWGAN/models/UpsampleAndCNN_CWGAN/Model_1_GP_10.0_DTW_0.0/Model.pth"
-GEN_BILSTM_CKPT = "Final_models/CWGAN/models/BiLSTM_CNN_CWGAN/Model_1_GP_10.0_DTW_0.0/Model.pth"
-GEN_CONVT_CKPT = "Final_models/CWGAN/models/DCNN_WGAN/Model_1_GP_10.0_DTW_0.0/Model.pth"
-GEN_UPCONV_DTW_CKPT = "Final_models/CWGAN/models/UpsampleAndCNN_CWGAN/Model_1_GP_10.0_DTW_1.0/Model.pth"
-GEN_BILSTM_DTW_CKPT = "Final_models/CWGAN/models/BiLSTM_CNN_CWGAN/Model_1_GP_10.0_DTW_1.0/Model.pth"
-GEN_CONVT_DTW_CKPT = "Final_models/CWGAN/models/DCNN_WGAN/Model_1_GP_10.0_DTW_1.0/Model.pth"
+GEN_UPCONV_CKPT = "CWGAN/models/UpsampleAndCNN_CWGAN/Model_0_GP_10.0_DTW_0.0/Model.pth"
+GEN_BILSTM_CKPT = "CWGAN/models/BiLSTM_CNN_CWGAN/Model_0_GP_10.0_DTW_0.0/Model.pth"
+GEN_CONVT_CKPT = "CWGAN/models/DCNN_WGAN/Model_0_GP_10.0_DTW_0.0/Model.pth"
+GEN_UPCONV_DTW_CKPT = "CWGAN/models/UpsampleAndCNN_CWGAN/Model_1_GP_10.0_DTW_1.0/Model.pth"
+GEN_BILSTM_DTW_CKPT = "CWGAN/models/BiLSTM_CNN_CWGAN/Model_1_GP_10.0_DTW_1.0/Model.pth"
+GEN_CONVT_DTW_CKPT = "CWGAN/models/DCNN_WGAN/Model_1_GP_10.0_DTW_1.0/Model.pth"
 
 
 @st.cache_resource(show_spinner=True)
@@ -55,7 +55,7 @@ def load_lead_minmax(path: str) -> Tuple[np.ndarray, np.ndarray]:
 @st.cache_resource(show_spinner=True)
 def load_models_and_stats() -> Tuple[Dict[str, torch.nn.Module], np.ndarray, np.ndarray, torch.device]:
     device = get_device()
-    lead_mins, lead_maxs = load_lead_minmax("biased_ptbxl_ecgs.npy")
+    lead_mins, lead_maxs = load_lead_minmax("../biased_ptbxl_ecgs.npy")
     models: Dict[str, torch.nn.Module] = {}
 
     gen_up = UPConv(ecg_length=ecg_length, n_leads=n_leads,
@@ -117,6 +117,7 @@ def set_seed(seed: Optional[int]) -> None:
 @torch.no_grad()
 def generate_sample(generator: torch.nn.Module, ecg_type: int, device: torch.device, seed: Optional[int]) -> np.ndarray:
     set_seed(seed)
+    noise = torch.randn(1, latent_dim, device=device)
     label = torch.tensor([ecg_type], dtype=torch.long, device=device).unsqueeze(1)
     out: torch.Tensor = generator(noise, label)
     return out.detach().cpu().numpy()
@@ -188,7 +189,6 @@ with st.sidebar:
         submitted = st.form_submit_button("Generate")
 
 seed_val: Optional[int] = int(seed) if use_seed else None
-noise = torch.randn(1, latent_dim, device=device)
 
 if submitted:
     st.session_state.gen_counter += 1

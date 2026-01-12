@@ -7,10 +7,10 @@ import torch.nn as nn
 import torch
 from ignite.metrics import MaximumMeanDiscrepancy
 import os
-from Final_models.WGAN.preprocessing_utils import save_generated_ecg, per_lead_minmax_scaling, gradient_penalty
+from WGAN.preprocessing_utils import save_generated_ecg, per_lead_minmax_scaling, gradient_penalty
 import torch.nn.functional as F
-from Final_models.WGAN.ConvTranspose1D import Generator as WGAN_Gen
-from Final_models.WGAN.ConvTranspose1D import Critic as WGAN_Critic
+from WGAN.ConvTranspose1D import Generator as WGAN_Gen
+from WGAN.ConvTranspose1D import Critic as WGAN_Critic
 
 latent_dim = 100
 num_seconds = 5

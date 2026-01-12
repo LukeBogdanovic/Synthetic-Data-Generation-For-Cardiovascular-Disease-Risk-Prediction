@@ -11,6 +11,7 @@ from wfdb.processing import gqrs_detect
 import torch
 import torch.nn.functional as F
 from torchmetrics import Recall, Precision, F1Score, Accuracy, ConfusionMatrix
+import ctypes
 import random
 import matplotlib.pyplot as plt
 import os
