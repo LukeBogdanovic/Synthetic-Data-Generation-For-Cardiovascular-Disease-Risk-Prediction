@@ -17,22 +17,6 @@ n_leads = 3
 BATCH_SIZE = 128
 
 
-class NoiseInjection(nn.Module):
-    """
-    Adds learned per-channel noise (StyleGAN trick).
-    Produces ECG-like micro-variability.
-    """
-
-    def __init__(self, channels):
-        super().__init__()
-        self.weight = nn.Parameter(torch.zeros(1, channels, 1))
-
-    def forward(self, x, noise=None):
-        if noise is None:
-            noise = torch.randn(x.size(0), 1, x.size(2), device=x.device)
-        return x + self.weight * noise
-
-
 class DeconvBlock1D(nn.Module):
     def __init__(self, in_ch, out_ch):
         super().__init__()
@@ -51,7 +35,6 @@ class DeconvBlock1D(nn.Module):
         )
         self.norm = nn.InstanceNorm1d(out_ch, affine=True)
         self.act = nn.LeakyReLU(0.3, inplace=True)
-        self.noise = NoiseInjection(out_ch)
 
     def forward(self, x):
         x = self.deconv(x)

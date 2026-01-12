@@ -49,13 +49,17 @@ class UpsampleBlock1d(nn.Module):
         self.act = nn.LeakyReLU(negative_slope=0.3, inplace=True)
         self.noise1 = NoiseInjection(ch1)
         self.noise2 = NoiseInjection(ch2)
+        self.norm1 = nn.InstanceNorm1d(ch1)
+        self.norm2 = nn.InstanceNorm1d(ch2)
 
     def forward(self, x):
         x = self.conv1(x)
         x = self.noise1(x)
+        x = self.norm1(x)
         x = self.act(x)
         x = self.conv2(x)
         x = self.noise2(x)
+        x = self.norm2(x)
         x = self.act(x)
         x = self.upsample(x)
         return x
@@ -391,21 +395,9 @@ def train_wgan_gp(generator, critic, dataloader, num_epochs, latent_dim, n_criti
 
 
 def main():
-    if os.path.exists("../../biased_ptbxl_ecgs.npy"):  # Check for the saved numpy file
+    if os.path.exists("biased_ptbxl_ecgs.npy"):  # Check for the saved numpy file
         # Load the saved numpy file
-        data = np.load("../../biased_ptbxl_ecgs.npy", allow_pickle=True)
-        normalized_data, lead_mins, lead_maxs = per_lead_minmax_scaling(data)
-    # Create numpy array of each normalized ecg
-    normalized_data = np.array(normalized_data)
-    # Convert the numpy array to a torch tensor
-    dataset_tensor = torch.tensor(normalized_data, dtype=torch.float32)
-    dataloader = DataLoader(TensorDataset(dataset_tensor),
-                            # Create a dataset loader for training the model, shuffles on each epoch
-                            batch_size=BATCH_SIZE, shuffle=True, drop_last=True)
-    # Set GPU device availability
-    if os.path.exists("../../biased_ptbxl_ecgs.npy"):  # Check for the saved numpy file
-        # Load the saved numpy file
-        data = np.load("../../biased_ptbxl_ecgs.npy", allow_pickle=True)
+        data = np.load("biased_ptbxl_ecgs.npy", allow_pickle=True)
         normalized_data, lead_mins, lead_maxs = per_lead_minmax_scaling(data)
     # Create numpy array of each normalized ecg
     normalized_data = np.array(normalized_data)
@@ -419,7 +411,7 @@ def main():
     n_critic = 5  # Number of times critic is trained (default=5)
     lambda_gp = 10.0  # Gradient penalty modifier hyperparameter (default=10.0)
     # Dynamic time warping modifier hyperparameter (default=0.1)
-    lambda_dtw = 1.0
+    lambda_dtw = 0.0
     GAN_model_num = 0
     generator = Generator(latent_dim=latent_dim).to(device)
     critic = Critic(ecg_length=ecg_length, n_leads=n_leads).to(
@@ -427,16 +419,16 @@ def main():
     g_optimizer = optim.Adam(generator.parameters(),
                              lr=2e-4, betas=[0.0, 0.9])
     c_optimizer = optim.Adam(critic.parameters(), lr=1e-4, betas=[0.0, 0.9])
-    while os.path.exists(f"images/BiLSTM_CNN_WGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"):
+    while os.path.exists(f"Final_models/WGAN/images/BiLSTM_CNN_WGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"):
         GAN_model_num += 1
-    image_path = f"images/BiLSTM_CNN_WGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"
+    image_path = f"Final_models/WGAN/images/BiLSTM_CNN_WGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"
     os.makedirs(image_path)  # Create new folder for the images to be saved to
     GAN_model_num = 0  # Reset folder index number for model saving
     # Check for folder number availability
-    while os.path.exists(f"models/BiLSTM_CNN_WGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"):
+    while os.path.exists(f"Final_models/WGAN/models/BiLSTM_CNN_WGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"):
         GAN_model_num += 1  # Increment model number for folder naming
     # Assign path for model to be saved to
-    model_path = f"models/BiLSTM_CNN_WGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"
+    model_path = f"Final_models/WGAN/models/BiLSTM_CNN_WGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"
     os.makedirs(model_path)  # Create new folder for the models to be saved to
     train_wgan_gp(generator, critic, dataloader, num_epochs, latent_dim,
                   # Begin training loop

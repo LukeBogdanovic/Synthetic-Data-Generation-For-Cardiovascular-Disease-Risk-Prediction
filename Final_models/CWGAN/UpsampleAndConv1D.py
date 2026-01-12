@@ -19,6 +19,17 @@ n_leads = 3
 BATCH_SIZE = 128
 
 
+class NoiseInjection(nn.Module):
+    def __init__(self, channels):
+        super().__init__()
+        self.weight = nn.Parameter(torch.zeros(1, channels, 1))
+
+    def forward(self, x, noise=None):
+        if noise is None:
+            noise = torch.randn(x.size(0), 1, x.size(
+                2), device=x.device, dtype=x.dtype)
+        return x + self.weight * noise
+
 class Generator(nn.Module):
     def __init__(self, ecg_length=640, n_leads=3, latent_dim=100, condition_dim=32,
                  L0=10, ch0=256, ups_factors=(2, 2, 2, 2, 2, 2), ch_min=16):
@@ -51,9 +62,11 @@ class Generator(nn.Module):
                 nn.Upsample(scale_factor=sf, mode="linear",
                             align_corners=False),
                 nn.Conv1d(cin, cout, kernel_size=5, padding=2, bias=False),
+                NoiseInjection(cout),
                 nn.InstanceNorm1d(cout),
                 nn.LeakyReLU(0.3, inplace=True),
                 nn.Conv1d(cout, cout, kernel_size=3, padding=1),
+                NoiseInjection(cout),
                 nn.InstanceNorm1d(cout),
                 nn.LeakyReLU(0.3, inplace=True)
             ]
@@ -377,11 +390,11 @@ def main():
     wgan_gen = WGAN_Gen().to(device)
     wgan_critic = WGAN_Critic().to(device)
     ckpt = torch.load(
-        "WGAN/models/UpsampleAndCNN_WGAN/Model_0_GP_10.0_DTW_0.0/Model.pth", weights_only=False)
+        "Final_models/WGAN/models/UpsampleAndCNN_WGAN/Model_1_GP_10.0_DTW_1.0/Model.pth", weights_only=False)
     wgan_gen.load_state_dict(ckpt['gen_state_dict'])
     wgan_critic.load_state_dict(ckpt['critic_state_dict'])
-    if os.path.exists("../fine_tune_data.npy"):
-        data = np.load("../fine_tune_data.npy", allow_pickle=True)
+    if os.path.exists("fine_tune_data.npy"):
+        data = np.load("fine_tune_data.npy", allow_pickle=True)
         segments = [item[0] for item in data]
         ecg_dataset = np.stack(segments)
         normalized_data, lead_mins, lead_maxs = per_lead_minmax_scaling(
@@ -396,7 +409,7 @@ def main():
     num_epochs = 50
     n_critic = 3
     lambda_gp = 10.0
-    lambda_dtw = 0.0
+    lambda_dtw = 1.0
     GAN_model_num = 0
     generator = Generator(ecg_length=ecg_length,
                           n_leads=n_leads, latent_dim=latent_dim).to(device)
@@ -407,14 +420,14 @@ def main():
         wgan_critic=wgan_critic, cwgan_critic=critic)
     g_optimizer = optim.Adam(generator.parameters(), lr=2e-4, betas=[0.0, 0.9])
     c_optimier = optim.Adam(critic.parameters(), lr=1e-4, betas=[0.0, 0.9])
-    while os.path.exists(f"CWGAN/images/UpsampleAndCNN_CWGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"):
+    while os.path.exists(f"Final_models/CWGAN/images/UpsampleAndCNN_CWGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"):
         GAN_model_num += 1
-    image_path = f"CWGAN/images/UpsampleAndCNN_CWGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"
+    image_path = f"Final_models/CWGAN/images/UpsampleAndCNN_CWGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"
     os.makedirs(image_path)
     GAN_model_num = 0
-    while os.path.exists(f"CWGAN/models/UpsampleAndCNN_CWGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"):
+    while os.path.exists(f"Final_models/CWGAN/models/UpsampleAndCNN_CWGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"):
         GAN_model_num += 1
-    model_path = f"CWGAN/models/UpsampleAndCNN_CWGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"
+    model_path = f"Final_models/CWGAN/models/UpsampleAndCNN_CWGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"
     os.makedirs(model_path)
     train(generator, critic, dataloader, num_epochs, latent_dim, n_critic,
           lambda_gp, lambda_dtw, g_optimizer, c_optimier, device, image_path, model_path, lead_maxs, lead_mins)

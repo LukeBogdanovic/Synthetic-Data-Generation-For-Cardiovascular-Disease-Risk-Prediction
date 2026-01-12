@@ -65,12 +65,12 @@ class Generator(nn.Module):
                 nn.Upsample(scale_factor=sf, mode="linear",
                             align_corners=False),
                 nn.Conv1d(cin, cout, kernel_size=5, padding=2, bias=False),
-                nn.InstanceNorm1d(cout),
                 NoiseInjection(cout),
+                nn.InstanceNorm1d(cout),
                 nn.LeakyReLU(0.3, inplace=True),
                 nn.Conv1d(cout, cout, kernel_size=3, padding=1),
-                nn.InstanceNorm1d(cout),
                 NoiseInjection(cout),
+                nn.InstanceNorm1d(cout),
                 nn.LeakyReLU(0.3, inplace=True)
             ]
         self.deconv = nn.Sequential(*blocks)
@@ -236,8 +236,6 @@ def train(generator, critic, dataloader, num_epochs, latent_dim, n_critic, lambd
     }
     softdtw = SoftDTWLossPyTorch(gamma=0.5, normalize=True).to(device)
     mmd = MaximumMeanDiscrepancy(var=1.0, device=device)
-    subset = min(64, BATCH_SIZE)
-    mvdtw_subset = min(64, BATCH_SIZE)
     for epoch in range(num_epochs):
         start_time_epoch = time.time()
         running_g_loss = 0.0
@@ -267,18 +265,12 @@ def train(generator, critic, dataloader, num_epochs, latent_dim, n_critic, lambd
             noise = torch.randn(batch_size, latent_dim, device=device)
             fake_ecg = generator(noise)
             g_optimizer.zero_grad()
-            # fake_ecg = fake_ecg.permute(0, 2, 1)
             critic_fake = critic(fake_ecg)
             loss_generator = -critic_fake.mean()
-            # mvdtw_idx = torch.randperm(batch_size, device=device)[
-            #     :mvdtw_subset]
-            # idx = torch.randperm(batch_size, device=device)[:subset]
             fake_sub = downsample_for_dtw(fake_ecg, factor=4)
             real_sub = downsample_for_dtw(real_ecg, factor=4)
             mvDTW_value = softdtw(fake_sub, real_sub).mean()
             mmd.reset()
-            # compute_mmd = (i % 5 == 0)
-            # if compute_mmd:
             with torch.no_grad():
                 fake_flat = flatten_ecg(fake_ecg)
                 real_flat = flatten_ecg(real_ecg)
@@ -289,7 +281,6 @@ def train(generator, critic, dataloader, num_epochs, latent_dim, n_critic, lambd
             loss_generator.backward()
             g_optimizer.step()
             mmd_step = mmd.compute()
-            # mmd_value = compute_mmd(real_ecg, fake_ecg, metric_lib=metric_lib)
             wgap = critic_real.mean().item() - critic_fake.mean().item()
             # Add calculated values to accumulation variables
             running_c_loss += loss_critic.item()
@@ -337,8 +328,8 @@ def train(generator, critic, dataloader, num_epochs, latent_dim, n_critic, lambd
 
 
 def main():
-    if os.path.exists("../../biased_ptbxl_ecgs.npy"):
-        data = np.load("../../biased_ptbxl_ecgs.npy", allow_pickle=True)
+    if os.path.exists("biased_ptbxl_ecgs.npy"):
+        data = np.load("biased_ptbxl_ecgs.npy", allow_pickle=True)
         normalized_data, lead_mins, lead_maxs = per_lead_minmax_scaling(data)
     normalized_data = np.array(normalized_data)
     dataset_tensor = torch.tensor(normalized_data, dtype=torch.float32)
@@ -355,14 +346,14 @@ def main():
     critic = Critic(ecg_length=ecg_length, n_leads=n_leads).to(device)
     g_optimizer = optim.Adam(generator.parameters(), lr=2e-4, betas=[0.0, 0.9])
     c_optimier = optim.Adam(critic.parameters(), lr=1e-4, betas=[0.0, 0.9])
-    while os.path.exists(f"images/UpsampleAndCNN_WGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"):
+    while os.path.exists(f"Final_models/WGAN/images/UpsampleAndCNN_WGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"):
         GAN_model_num += 1
-    image_path = f"images/UpsampleAndCNN_WGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"
+    image_path = f"Final_models/WGAN/images/UpsampleAndCNN_WGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"
     os.makedirs(image_path)
     GAN_model_num = 0
-    while os.path.exists(f"models/UpsampleAndCNN_WGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"):
+    while os.path.exists(f"Final_models/WGAN/models/UpsampleAndCNN_WGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"):
         GAN_model_num += 1
-    model_path = f"models/UpsampleAndCNN_WGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"
+    model_path = f"Final_models/WGAN/models/UpsampleAndCNN_WGAN/Model_{GAN_model_num}_GP_{lambda_gp}_DTW_{lambda_dtw}"
     os.makedirs(model_path)
     train(generator, critic, dataloader, num_epochs, latent_dim, n_critic,
           lambda_gp, lambda_dtw, g_optimizer, c_optimier, device, image_path, model_path, lead_maxs, lead_mins)
