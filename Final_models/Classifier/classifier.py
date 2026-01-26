@@ -8,7 +8,7 @@ import torch.nn.functional as F
 import os
 import numpy as np
 import pandas as pd
-from Final_models.WGAN.preprocessing_utils import reorder_features, evaluate_on_test
+from Final_models.WGAN.preprocessing_utils import reorder_features
 
 
 class ECG_Conv_Block(nn.Module):
@@ -79,9 +79,14 @@ def make_metrics(num_classes : int):
         "acc_macro": MulticlassAccuracy(num_classes=num_classes, average='macro'),
         "acc_weighted": MulticlassAccuracy(num_classes=num_classes, average='weighted'),
         "f1_macro": MulticlassF1Score(num_classes=num_classes, average='macro'),
+        "f1_micro": MulticlassF1Score(num_classes=num_classes,average='micro'),
         "f1_weighted": MulticlassF1Score(num_classes=num_classes, average='weighted'),
         "recall_macro": MulticlassRecall(num_classes=num_classes, average='macro'),
+        "recall_micro": MulticlassRecall(num_classes=num_classes,average='micro'),
+        "recall_weighted": MulticlassF1Score(num_classes=num_classes, average='weighted'),
         "precision_macro": MulticlassPrecision(num_classes=num_classes, average='macro'),
+        "precision_micro": MulticlassPrecision(num_classes=num_classes,average='micro'),
+        "precision_weighted": MulticlassF1Score(num_classes=num_classes, average='weighted'),
         "f1_per_class": MulticlassF1Score(num_classes=num_classes, average='none'),
         "recall_per_class": MulticlassRecall(num_classes=num_classes, average='none'),
         "precision_per_class": MulticlassPrecision(num_classes=num_classes, average='none'),
@@ -147,7 +152,7 @@ def run_train_epoch(model : nn.Module, loader : DataLoader, device : torch.devic
         total_loss += loss.item() * bs
         n += bs
         correct += (preds == labels).sum().item()
-        print(f"Step: {i+1:4d}/{len(loader)} | Loss: {total_loss/n:.4f} | Acc: {correct/n:.4f}")
+        # print(f"Step: {i+1:4d}/{len(loader)} | Loss: {total_loss/n:.4f} | Acc: {correct/n:.4f}")
     
     out = metrics.compute()
     out['loss'] = torch.tensor(total_loss/max(n,1), device=device)
@@ -198,6 +203,7 @@ def train(classifier : nn.Module, trainloader: DataLoader, validloader: DataLoad
             "train_acc_macro": train_out["acc_macro"].item(),
             "train_acc_weighted": train_out["acc_weighted"].item(),
             "train_f1_macro": train_out["f1_macro"].item(),
+            "train_f1_micro":train_out["f1_micro"].item(),
             "train_f1_weighted": train_out["f1_weighted"].item(),
             "val_loss": val_out["loss"].item(),
             "val_acc_micro": val_out["acc_micro"].item(),
@@ -242,7 +248,7 @@ def main(trainloader, validloader, num_epochs, num_risk_factors, num_classes, de
     train(classifier,trainloader,validloader,device,optimizer,cost_function,model_path,num_epochs,num_classes, testloader_synth, testloader_real)
 
 if __name__ == "__main__":
-    dataset = 1.0
+    dataset = 0.0
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     num_epochs = 10
     BATCH_SIZE = 64
