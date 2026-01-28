@@ -14,7 +14,8 @@ from Final_models.WGAN.preprocessing_utils import reorder_features
 class ECG_Conv_Block(nn.Module):
     def __init__(self, in_ch, out_ch, k_size, pad):
         super(ECG_Conv_Block, self).__init__()
-        self.conv = nn.Conv1d(in_channels=in_ch, out_channels=out_ch, kernel_size=k_size, padding=pad)
+        self.conv = nn.Conv1d(
+            in_channels=in_ch, out_channels=out_ch, kernel_size=k_size, padding=pad)
         self.batch_norm = nn.BatchNorm1d(out_ch)
         self.dropout = nn.Dropout1d(0.2)
         self.leaky_relu = nn.LeakyReLU(0.3)
@@ -66,26 +67,27 @@ class Classifier(nn.Module):
         x = x.mean(dim=-1)
         if self.risk_mlp is not None:
             if risk_factors is None:
-                raise ValueError("Risk factors must be provided when num_risk_factors > 0")
+                raise ValueError(
+                    "Risk factors must be provided when num_risk_factors > 0")
             r = self.risk_mlp(risk_factors)
             x = torch.cat([x, r], dim=1)
         logits = self.head(x)
         return logits
 
 
-def make_metrics(num_classes : int):
+def make_metrics(num_classes: int):
     return MetricCollection({
         "acc_micro": MulticlassAccuracy(num_classes=num_classes, average='micro'),
         "acc_macro": MulticlassAccuracy(num_classes=num_classes, average='macro'),
         "acc_weighted": MulticlassAccuracy(num_classes=num_classes, average='weighted'),
         "f1_macro": MulticlassF1Score(num_classes=num_classes, average='macro'),
-        "f1_micro": MulticlassF1Score(num_classes=num_classes,average='micro'),
+        "f1_micro": MulticlassF1Score(num_classes=num_classes, average='micro'),
         "f1_weighted": MulticlassF1Score(num_classes=num_classes, average='weighted'),
         "recall_macro": MulticlassRecall(num_classes=num_classes, average='macro'),
-        "recall_micro": MulticlassRecall(num_classes=num_classes,average='micro'),
+        "recall_micro": MulticlassRecall(num_classes=num_classes, average='micro'),
         "recall_weighted": MulticlassF1Score(num_classes=num_classes, average='weighted'),
         "precision_macro": MulticlassPrecision(num_classes=num_classes, average='macro'),
-        "precision_micro": MulticlassPrecision(num_classes=num_classes,average='micro'),
+        "precision_micro": MulticlassPrecision(num_classes=num_classes, average='micro'),
         "precision_weighted": MulticlassF1Score(num_classes=num_classes, average='weighted'),
         "f1_per_class": MulticlassF1Score(num_classes=num_classes, average='none'),
         "recall_per_class": MulticlassRecall(num_classes=num_classes, average='none'),
@@ -93,16 +95,17 @@ def make_metrics(num_classes : int):
         "conf_mat": MulticlassConfusionMatrix(num_classes=num_classes)
     })
 
+
 @torch.no_grad()
-def run_eval_epoch(model : nn.Module, loader : DataLoader[TensorDataset], device : torch.device, metrics : MetricCollection):
+def run_eval_epoch(model: nn.Module, loader: DataLoader[TensorDataset], device: torch.device, metrics: MetricCollection):
     model.eval()
     metrics.reset()
     total_loss = 0.0
     n = 0
 
     for i, (ecg, risk, labels) in enumerate(loader):
-        ecg : torch.Tensor
-        risk : torch.Tensor
+        ecg: torch.Tensor
+        risk: torch.Tensor
         labels: torch.Tensor
         ecg = ecg.to(device)
         risk = risk.to(device)
@@ -117,13 +120,13 @@ def run_eval_epoch(model : nn.Module, loader : DataLoader[TensorDataset], device
         bs = labels.size(0)
         total_loss += loss.item() * bs
         n += bs
-    
+
     out = metrics.compute()
-    out['loss'] = torch.tensor(total_loss / max(n,1), device=device)
+    out['loss'] = torch.tensor(total_loss / max(n, 1), device=device)
     return out
 
 
-def run_train_epoch(model : nn.Module, loader : DataLoader, device : torch.device, optimizer : optim.Adam, cost_function: nn.CrossEntropyLoss, metrics : MetricCollection):
+def run_train_epoch(model: nn.Module, loader: DataLoader, device: torch.device, optimizer: optim.Adam, cost_function: nn.CrossEntropyLoss, metrics: MetricCollection):
     model.train()
     metrics.reset()
 
@@ -153,9 +156,9 @@ def run_train_epoch(model : nn.Module, loader : DataLoader, device : torch.devic
         n += bs
         correct += (preds == labels).sum().item()
         # print(f"Step: {i+1:4d}/{len(loader)} | Loss: {total_loss/n:.4f} | Acc: {correct/n:.4f}")
-    
+
     out = metrics.compute()
-    out['loss'] = torch.tensor(total_loss/max(n,1), device=device)
+    out['loss'] = torch.tensor(total_loss/max(n, 1), device=device)
     return out
 
 
@@ -176,7 +179,7 @@ def pretty_print_metrics(prefix: str, out: dict, num_classes: int):
         print(f"{prefix} confusion matrix:\n{cm}")
 
 
-def train(classifier : nn.Module, trainloader: DataLoader, validloader: DataLoader, device: torch.device, optimizer, cost_function, model_path: str, num_epochs: int, num_classes: int, testloader_synth, testloader_real):
+def train(classifier: nn.Module, trainloader: DataLoader, validloader: DataLoader, device: torch.device, optimizer, cost_function, model_path: str, num_epochs: int, num_classes: int, testloader_synth, testloader_real):
     train_metrics = make_metrics(num_classes).to(device)
     val_metrics = make_metrics(num_classes=num_classes).to(device)
 
@@ -184,18 +187,21 @@ def train(classifier : nn.Module, trainloader: DataLoader, validloader: DataLoad
     history = []
 
     for epoch in range(1, num_epochs+1):
-        train_out = run_train_epoch(classifier, trainloader, device, optimizer, cost_function, train_metrics)
+        train_out = run_train_epoch(
+            classifier, trainloader, device, optimizer, cost_function, train_metrics)
         val_out = run_eval_epoch(classifier, validloader, device, val_metrics)
 
-        pretty_print_metrics(f"Epoch {epoch:03d} TRAIN", train_out, num_classes)
+        pretty_print_metrics(
+            f"Epoch {epoch:03d} TRAIN", train_out, num_classes)
         pretty_print_metrics(f"Epoch {epoch:03d} VAL  ", val_out, num_classes)
 
         val_f1_macro = val_out["f1_macro"].item()
         if val_f1_macro > best_val_f1:
             best_val_f1 = val_f1_macro
             os.makedirs(model_path, exist_ok=True)
-            torch.save(classifier.state_dict(), os.path.join(model_path, "best_model.pth"))
-        
+            torch.save(classifier.state_dict(), os.path.join(
+                model_path, "best_model.pth"))
+
         history.append({
             "epoch": epoch,
             "train_loss": train_out["loss"].item(),
@@ -203,7 +209,7 @@ def train(classifier : nn.Module, trainloader: DataLoader, validloader: DataLoad
             "train_acc_macro": train_out["acc_macro"].item(),
             "train_acc_weighted": train_out["acc_weighted"].item(),
             "train_f1_macro": train_out["f1_macro"].item(),
-            "train_f1_micro":train_out["f1_micro"].item(),
+            "train_f1_micro": train_out["f1_micro"].item(),
             "train_f1_weighted": train_out["f1_weighted"].item(),
             "val_loss": val_out["loss"].item(),
             "val_acc_micro": val_out["acc_micro"].item(),
@@ -213,13 +219,16 @@ def train(classifier : nn.Module, trainloader: DataLoader, validloader: DataLoad
             "val_f1_weighted": val_out["f1_weighted"].item(),
         })
 
-        print(f"Epoch: {epoch:03d} | Train Loss: {train_out['loss']:.4f} | Val Loss : {val_out['loss']:.4f} | Val F1(Macro) : {val_out['f1_macro']:.4f} | Val Acc(micro) : {val_out['acc_micro']:.4f} | Val Acc(weighted) : {val_out['acc_weighted']:.4f}")
+        print(
+            f"Epoch: {epoch:03d} | Train Loss: {train_out['loss']:.4f} | Val Loss : {val_out['loss']:.4f} | Val F1(Macro) : {val_out['f1_macro']:.4f} | Val Acc(micro) : {val_out['acc_micro']:.4f} | Val Acc(weighted) : {val_out['acc_weighted']:.4f}")
 
     test_metrics = make_metrics(num_classes).to(device)
-    synth_test_out = run_eval_epoch(classifier, testloader_synth, device, test_metrics)
+    synth_test_out = run_eval_epoch(
+        classifier, testloader_synth, device, test_metrics)
 
     test_metrics2 = make_metrics(num_classes).to(device)
-    real_test_out = run_eval_epoch(classifier, testloader_real, device, test_metrics2)
+    real_test_out = run_eval_epoch(
+        classifier, testloader_real, device, test_metrics2)
 
     pretty_print_metrics("SYNTH TEST", synth_test_out, num_classes)
     pretty_print_metrics("REAL  TEST", real_test_out, num_classes)
@@ -237,7 +246,8 @@ def train(classifier : nn.Module, trainloader: DataLoader, validloader: DataLoad
 
 
 def main(trainloader, validloader, num_epochs, num_risk_factors, num_classes, device, testloader_synth, testloader_real):
-    classifier = Classifier(num_leads=3,num_risk_factors=num_risk_factors, num_classes=4).to(device)
+    classifier = Classifier(
+        num_leads=3, num_risk_factors=num_risk_factors, num_classes=4).to(device)
     optimizer = optim.Adam(classifier.parameters(), lr=1e-4)
     cost_function = nn.CrossEntropyLoss()
     classifier_model_num = 0
@@ -245,29 +255,39 @@ def main(trainloader, validloader, num_epochs, num_risk_factors, num_classes, de
         classifier_model_num += 1
     model_path = f"Final_models/Classifier/models/classifier{classifier_model_num}"
     os.makedirs(model_path)
-    train(classifier,trainloader,validloader,device,optimizer,cost_function,model_path,num_epochs,num_classes, testloader_synth, testloader_real)
+    train(classifier, trainloader, validloader, device, optimizer, cost_function,
+          model_path, num_epochs, num_classes, testloader_synth, testloader_real)
+
 
 if __name__ == "__main__":
-    dataset = 0.0
+    dataset = 1.0
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    num_epochs = 10
+    num_epochs = 30
     BATCH_SIZE = 64
     df = pd.read_csv("augmented_dataset.csv")
-    synth_data = torch.load(f"synth_datasets/{dataset}_real_synth_dataset.pth", weights_only=False)
-    trainloader = DataLoader(synth_data['train'].dataset, batch_size=BATCH_SIZE, shuffle=True)
-    validloader = DataLoader(synth_data['valid'].dataset, batch_size=BATCH_SIZE, shuffle=True)
-    testloader_synth = DataLoader(synth_data['test'].dataset, batch_size=BATCH_SIZE, shuffle=False)
-    ecg_data = np.load("real_ecg.npy",allow_pickle=True)
-    crf_data = np.load("real_crf.npy",allow_pickle=True)
+    synth_data = torch.load(
+        f"synth_datasets/{dataset}_real_synth_dataset_filtered.pth", weights_only=False)
+    trainloader = DataLoader(
+        synth_data['train'].dataset, batch_size=BATCH_SIZE, shuffle=True)
+    validloader = DataLoader(
+        synth_data['valid'].dataset, batch_size=BATCH_SIZE, shuffle=True)
+    testloader_synth = DataLoader(
+        synth_data['test'].dataset, batch_size=BATCH_SIZE, shuffle=False)
+    ecg_data = np.load("real_ecg.npy", allow_pickle=True)
+    crf_data = np.load("real_crf.npy", allow_pickle=True)
     crf_data = crf_data.tolist()
     vasc_events = [val['Vascular event'] for val in crf_data]
     keys = [k for k in crf_data[0].keys() if k != 'Vascular event']
     non_vasc_features = np.array([[d[k] for k in keys] for d in crf_data])
-    non_vasc_features_reordered = np.array([reorder_features(row) for row in non_vasc_features])
+    non_vasc_features_reordered = np.array(
+        [reorder_features(row) for row in non_vasc_features])
     ecg_data = torch.tensor(ecg_data, dtype=torch.float32)
     crf_data = torch.tensor(non_vasc_features_reordered, dtype=torch.float32)
     labels = torch.tensor(vasc_events, dtype=torch.long)
     ecg_data = ecg_data.permute(0, 2, 1)
-    real_test_dataset = TensorDataset(ecg_data, crf_data, labels)  # Create new real dataset
-    testloader_real = DataLoader(real_test_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False)
-    main(num_epochs=num_epochs, trainloader=trainloader, validloader=validloader, num_risk_factors=7, device=device, num_classes=4, testloader_synth=testloader_synth, testloader_real=testloader_real)
+    real_test_dataset = TensorDataset(
+        ecg_data, crf_data, labels)  # Create new real dataset
+    testloader_real = DataLoader(
+        real_test_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False)
+    main(num_epochs=num_epochs, trainloader=trainloader, validloader=validloader, num_risk_factors=7,
+         device=device, num_classes=4, testloader_synth=testloader_synth, testloader_real=testloader_real)
