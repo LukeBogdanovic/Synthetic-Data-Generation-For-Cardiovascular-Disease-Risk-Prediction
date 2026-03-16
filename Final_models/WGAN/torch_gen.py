@@ -1,3 +1,9 @@
+from ConvTranspose1D import Generator as ConvT
+from BiLSTM_CNN import Generator as BiLSTM
+from UpsampleAndConv1D import Generator as UPConv
+from preprocessing_utils import per_lead_minmax_scaling, per_lead_inverse_scaling, bandpass_filter, setup_filter
+import sys
+from pathlib import Path
 import os
 from typing import Dict, Optional, Tuple
 
@@ -7,28 +13,22 @@ import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 import streamlit as st
 
-plt.rcParams.update({"fontsize":16})
+plt.rcParams.update({"font.size": 16})
 
-from pathlib import Path
-import sys
 
-WGAN_PARENT = Path(__file__).resolve().parent.parent.parent
+WGAN_PARENT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(WGAN_PARENT))
-from Final_models.WGAN.preprocessing_utils import per_lead_minmax_scaling, per_lead_inverse_scaling, bandpass_filter, setup_filter
-from Final_models.WGAN.UpsampleAndConv1D import Generator as UPConv
-from Final_models.WGAN.BiLSTM_CNN import Generator as BiLSTM
-from Final_models.WGAN.ConvTranspose1D import Generator as ConvT
 
 
 latent_dim: int = 100
 ecg_length: int = 128 * 5
 n_leads: int = 3
 
-GEN_UPCONV_CKPT = "Final_models/WGAN/models/UpsampleAndCNN_WGAN/Model_0_GP_10.0_DTW_0.0/Model.pth"
-GEN_BILSTM_CKPT = "Final_models/WGAN/models/BiLSTM_CNN_WGAN/Model_0_GP_10.0_DTW_0.0/Model.pth"
-GEN_CONVT_CKPT = "Final_models/WGAN/models/DCNN_WGAN/Model_1_GP_10.0_DTW_0.0/Model.pth"
-GEN_UPCONV_DTW_CKPT = "Final_models/WGAN/models/UpsampleAndCNN_WGAN/Model_0_GP_10.0_DTW_1.0/Model.pth"
-GEN_BILSTM_DTW_CKPT = "Final_models/WGAN/models/BiLSTM_CNN_WGAN/Model_0_GP_10.0_DTW_1.0/Model.pth"
+GEN_UPCONV_CKPT = "Final_models/WGAN/models/UpsampleAndCNN_WGAN/Model_1_GP_10.0_DTW_0.0/Model.pth"
+GEN_BILSTM_CKPT = "Final_models/WGAN/models/BiLSTM_CNN_WGAN/Model_2_GP_10.0_DTW_0.0/Model.pth"
+# GEN_CONVT_CKPT = "Final_models/WGAN/models/DCNN_WGAN/Model_1_GP_10.0_DTW_0.0/Model.pth"
+GEN_UPCONV_DTW_CKPT = "Final_models/WGAN/models/UpsampleAndCNN_WGAN/Model_1_GP_10.0_DTW_1.0/Model.pth"
+GEN_BILSTM_DTW_CKPT = "Final_models/WGAN/models/BiLSTM_CNN_WGAN/Model_2_GP_10.0_DTW_1.0/Model.pth"
 GEN_CONVT_DTW_CKPT = "Final_models/WGAN/models/DCNN_WGAN/Model_1_GP_10.0_DTW_1.0/Model.pth"
 
 
@@ -73,15 +73,15 @@ def load_models_and_stats() -> Tuple[Dict[str, torch.nn.Module], np.ndarray, np.
     gen_bi.eval()
     models['bilstm'] = gen_bi
 
-    gen_ct = ConvT().to(device)
-    ckpt_ct = torch.load(
-        GEN_CONVT_CKPT, map_location=device, weights_only=False)
-    gen_ct.load_state_dict(ckpt_ct['gen_state_dict'])
-    gen_ct.eval()
-    models['dcnn'] = gen_ct
+    # gen_ct = ConvT().to(device)
+    # ckpt_ct = torch.load(
+    #     GEN_CONVT_CKPT, map_location=device, weights_only=False)
+    # gen_ct.load_state_dict(ckpt_ct['gen_state_dict'])
+    # gen_ct.eval()
+    # models['dcnn'] = gen_ct
 
     gen_up_dtw = UPConv(ecg_length=ecg_length, n_leads=n_leads,
-                    latent_dim=latent_dim).to(device)
+                        latent_dim=latent_dim).to(device)
     ckpt_up_dtw = torch.load(
         GEN_UPCONV_DTW_CKPT, map_location=device, weights_only=False)
     gen_up_dtw.load_state_dict(ckpt_up_dtw['gen_state_dict'])
@@ -95,12 +95,12 @@ def load_models_and_stats() -> Tuple[Dict[str, torch.nn.Module], np.ndarray, np.
     gen_bi_dtw.eval()
     models['bilstm_dtw'] = gen_bi_dtw
 
-    gen_ct_dtw = ConvT().to(device)
-    ckpt_ct_dtw = torch.load(
-        GEN_CONVT_DTW_CKPT, map_location=device, weights_only=False)
-    gen_ct_dtw.load_state_dict(ckpt_ct_dtw['gen_state_dict'])
-    gen_ct_dtw.eval()
-    models['dcnn_dtw'] = gen_ct_dtw
+    # gen_ct_dtw = ConvT().to(device)
+    # ckpt_ct_dtw = torch.load(
+    #     GEN_CONVT_DTW_CKPT, map_location=device, weights_only=False)
+    # gen_ct_dtw.load_state_dict(ckpt_ct_dtw['gen_state_dict'])
+    # gen_ct_dtw.eval()
+    # models['dcnn_dtw'] = gen_ct_dtw
 
     return models, lead_mins, lead_maxs, device
 
@@ -135,26 +135,26 @@ def standardize_sample_layout(sample: np.ndarray, model_name: str) -> np.ndarray
     return sample
 
 
-def make_plot(sample: np.ndarray, lead_mins, lead_maxs, model_name: str, display_len: int,b,a) -> Figure:
+def make_plot(sample: np.ndarray, lead_mins, lead_maxs, model_name: str, display_len: int, b, a) -> Figure:
     sample = per_lead_inverse_scaling(sample, lead_mins, lead_maxs)
     sample = sample.squeeze(0)
     sample = bandpass_filter(sample, b, a)
     T = sample.shape[0]
     display_len = int(max(128, min(T, display_len)))
 
-    fig, axs = plt.subplots(n_leads, 1, figsize=(10, 8), sharex=True, dpi=150)
+    fig, axs = plt.subplots(1, 1, figsize=(10, 8), sharex=True, dpi=150)
     # fig.suptitle(
     #     f"Model: {model_name} | Display: {display_len} samples", fontsize=12)
 
     lead_labels = ["Lead III", "Lead V3", "Lead V5"]
     x = np.arange(display_len)
 
-    for i, ax in enumerate(axs):
-        ax.plot(x, sample[:display_len, i], linewidth=2.0)
-        ax.set_title(lead_labels[i])
-        ax.set_xlabel("Time (samples)")
-        ax.set_ylabel("Amplitude (mV)")
-        ax.grid(True, alpha=0.5)
+    for i in range(1):
+        axs.plot(x, sample[:display_len, 0], linewidth=2.0)
+        axs.set_title("Generated ECG")
+        axs.set_xlabel("Time (samples)")
+        axs.set_ylabel("Amplitude (mV)")
+        axs.grid(True, alpha=0.5)
     fig.tight_layout()
     return fig
 
@@ -223,9 +223,8 @@ if st.session_state.last_settings is not None and len(st.session_state.last_samp
             lead_maxs,
             settings["model_name"],
             int(settings["display_len"]),
-            b,a
+            b, a
         )
         cols[idx % len(cols)].pyplot(fig, clear_figure=True)
 else:
     st.info("Click **Generate** to create an ECG.")
-

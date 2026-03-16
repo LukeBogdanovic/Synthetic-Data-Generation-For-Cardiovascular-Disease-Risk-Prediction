@@ -93,6 +93,13 @@ class Generator(nn.Module):
         )
         self.tanh = nn.Tanh()
 
+        self.head = nn.Sequential(
+            nn.Conv1d(16, 16, kernel_size=7, padding=3),
+            nn.LeakyReLU(0.3, inplace=True),
+            nn.Conv1d(16, n_leads, kernel_size=7, padding=3),
+            nn.Tanh(),
+        )
+
         self.cond_block = nn.Sequential(
             nn.Embedding(4, condition_dim),
             nn.Linear(condition_dim, condition_dim),
@@ -127,8 +134,9 @@ class Generator(nn.Module):
         x, _ = self.bilstm(x)
         x = x.permute(0, 2, 1)
         x = self.conv_block(x)
-        x = self.conv_out(x)
-        x = self.tanh(x)
+        # x = self.conv_out(x)
+        # x = self.tanh(x)
+        x = self.head(x)
         return x
 
 
@@ -491,14 +499,14 @@ def main():
     wgan_gen = WGAN_Gen().to(device)
     wgan_critic = WGAN_Critic().to(device)
     ckpt = torch.load(
-        "Final_models/WGAN/models/BiLSTM_CNN_WGAN/Model_1_GP_10.0_DTW_1.0/Model.pth", weights_only=False)
+        "Final_models/WGAN/models/BiLSTM_CNN_WGAN/Model_2_GP_10.0_DTW_0.0/Model.pth", weights_only=False)
     wgan_gen.load_state_dict(ckpt['gen_state_dict'])
     wgan_critic.load_state_dict(ckpt['critic_state_dict'])
     num_epochs = 50  # Number of epochs
     n_critic = 3  # Number of times critic is trained (default=5)
     lambda_gp = 10.0  # Gradient penalty modifier hyperparameter (default=10.0)
     # Dynamic time warping modifier hyperparameter (default=0.1)
-    lambda_dtw = 1.0
+    lambda_dtw = 0.0
     GAN_model_num = 0
     generator = Generator(latent_dim=latent_dim).to(device)
     critic = Critic(ecg_length=ecg_length, n_leads=n_leads).to(

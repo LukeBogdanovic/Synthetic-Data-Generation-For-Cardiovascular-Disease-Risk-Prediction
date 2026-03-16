@@ -214,10 +214,8 @@ def flatten_ecg(x):
 
 
 def downsample_for_dtw(x, factor=4):
-    # x: (B, 640, 3) or (B, 3, 640) – you use (B, 640, 3) here
     if x.shape[1] == 640 and x.shape[2] == 3:
         x = x.permute(0, 2, 1)  # (B, 3, 640)
-    # (B, 3, 640/factor)
     x = F.avg_pool1d(x, kernel_size=factor, stride=factor)
     return x.permute(0, 2, 1)  # (B, 640/factor, 3)
 

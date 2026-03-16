@@ -30,6 +30,7 @@ class NoiseInjection(nn.Module):
                 2), device=x.device, dtype=x.dtype)
         return x + self.weight * noise
 
+
 class Generator(nn.Module):
     def __init__(self, ecg_length=640, n_leads=3, latent_dim=100, condition_dim=32,
                  L0=10, ch0=256, ups_factors=(2, 2, 2, 2, 2, 2), ch_min=16):

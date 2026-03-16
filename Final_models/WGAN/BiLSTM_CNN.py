@@ -14,7 +14,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
-from WGAN.preprocessing_utils import per_lead_minmax_scaling, save_generated_ecg, gradient_penalty
+from preprocessing_utils import per_lead_minmax_scaling, save_generated_ecg, gradient_penalty
 import pynvml
 import torch.nn.functional as F
 
@@ -83,6 +83,13 @@ class Generator(nn.Module):
         blocks.append(UpsampleBlock1d(2*lstm_hidden, 128, 64))
         blocks.append(UpsampleBlock1d(64, 32, 16))
         self.conv_block = nn.Sequential(*blocks)
+        self.head = nn.Sequential(
+            nn.Conv1d(16, 16, kernel_size=7, padding=3),
+            nn.LeakyReLU(0.3, inplace=True),
+            nn.Conv1d(16, n_leads, kernel_size=7, padding=3),
+            nn.Tanh(),
+        )
+
         self.conv_out = nn.Conv1d(
             in_channels=16,
             out_channels=n_leads,
@@ -117,6 +124,7 @@ class Generator(nn.Module):
         x, _ = self.bilstm(x)
         x = x.permute(0, 2, 1)
         x = self.conv_block(x)
+        # x = self.head(x)
         x = self.conv_out(x)
         x = self.tanh(x)
         return x
@@ -411,7 +419,7 @@ def main():
     n_critic = 5  # Number of times critic is trained (default=5)
     lambda_gp = 10.0  # Gradient penalty modifier hyperparameter (default=10.0)
     # Dynamic time warping modifier hyperparameter (default=0.1)
-    lambda_dtw = 0.0
+    lambda_dtw = 1.0
     GAN_model_num = 0
     generator = Generator(latent_dim=latent_dim).to(device)
     critic = Critic(ecg_length=ecg_length, n_leads=n_leads).to(

@@ -379,14 +379,14 @@ def main():
     # ------------------
     # Settings
     # ------------------
-    real_data_fraction = 0.1
+    real_data_fraction = 0.5
     number_of_samples = 10000
     BATCH_SIZE = 128
     noise_dim = 100
 
     # Generation/filtering
     chunk_candidates = 12000        # bigger chunks -> easier to fill quotas
-    keep_mode = "top_pct"        # "threshold" or "top_pct"
+    keep_mode = "threshold"        # "threshold" or "top_pct"
     real_quantile = 0.05           # lower -> easier pass (e.g., 0.05)
     top_pct = 1.0               # only used if keep_mode == "top_pct"
 
@@ -400,7 +400,7 @@ def main():
 
     cgan_ckpt = "Final_models/CWGAN/models/UpsampleAndCNN_CWGAN/Model_2_GP_10.0_DTW_1.0/Model.pth"
 
-    out_dir = "synth_datasets"
+    out_dir = "Final_models/Classifier/synth_datasets"
     os.makedirs(out_dir, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

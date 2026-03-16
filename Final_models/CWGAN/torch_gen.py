@@ -22,14 +22,14 @@ from CWGAN.ConvTranspose1D import Generator as ConvT
 
 latent_dim: int = 100
 ecg_length: int = 128 * 5
-n_leads: int = 3
+n_leads: int = 1
 
-GEN_UPCONV_CKPT = "CWGAN/models/UpsampleAndCNN_CWGAN/Model_0_GP_10.0_DTW_0.0/Model.pth"
-GEN_BILSTM_CKPT = "CWGAN/models/BiLSTM_CNN_CWGAN/Model_0_GP_10.0_DTW_0.0/Model.pth"
-GEN_CONVT_CKPT = "CWGAN/models/DCNN_WGAN/Model_0_GP_10.0_DTW_0.0/Model.pth"
-GEN_UPCONV_DTW_CKPT = "CWGAN/models/UpsampleAndCNN_CWGAN/Model_1_GP_10.0_DTW_1.0/Model.pth"
-GEN_BILSTM_DTW_CKPT = "CWGAN/models/BiLSTM_CNN_CWGAN/Model_1_GP_10.0_DTW_1.0/Model.pth"
-GEN_CONVT_DTW_CKPT = "CWGAN/models/DCNN_WGAN/Model_1_GP_10.0_DTW_1.0/Model.pth"
+GEN_UPCONV_CKPT = "Final_models/CWGAN/models/UpsampleAndCNN_CWGAN/Model_2_GP_10.0_DTW_0.0/Model.pth"
+GEN_BILSTM_CKPT = "Final_models/CWGAN/models/BiLSTM_CNN_CWGAN/Model_2_GP_10.0_DTW_0.0/Model.pth"
+GEN_CONVT_CKPT = "Final_models/CWGAN/models/DCNN_WGAN/Model_0_GP_10.0_DTW_0.0/Model.pth"
+GEN_UPCONV_DTW_CKPT = "Final_models/CWGAN/models/UpsampleAndCNN_CWGAN/Model_2_GP_10.0_DTW_1.0/Model.pth"
+GEN_BILSTM_DTW_CKPT = "Final_models/CWGAN/models/BiLSTM_CNN_CWGAN/Model_1_GP_10.0_DTW_1.0/Model.pth"
+GEN_CONVT_DTW_CKPT = "Final_models/CWGAN/models/DCNN_WGAN/Model_1_GP_10.0_DTW_1.0/Model.pth"
 
 
 @st.cache_resource(show_spinner=True)
@@ -55,7 +55,7 @@ def load_lead_minmax(path: str) -> Tuple[np.ndarray, np.ndarray]:
 @st.cache_resource(show_spinner=True)
 def load_models_and_stats() -> Tuple[Dict[str, torch.nn.Module], np.ndarray, np.ndarray, torch.device]:
     device = get_device()
-    lead_mins, lead_maxs = load_lead_minmax("../biased_ptbxl_ecgs.npy")
+    lead_mins, lead_maxs = load_lead_minmax("biased_ptbxl_ecgs.npy")
     models: Dict[str, torch.nn.Module] = {}
 
     gen_up = UPConv(ecg_length=ecg_length, n_leads=n_leads,
@@ -66,12 +66,12 @@ def load_models_and_stats() -> Tuple[Dict[str, torch.nn.Module], np.ndarray, np.
     gen_up.eval()
     models['upconv'] = gen_up
 
-    gen_bi = BiLSTM().to(device)
-    ckpt_bi = torch.load(
-        GEN_BILSTM_CKPT, map_location=device, weights_only=False)
-    gen_bi.load_state_dict(ckpt_bi['gen_state_dict'])
-    gen_bi.eval()
-    models['bilstm'] = gen_bi
+    # gen_bi = BiLSTM().to(device)
+    # ckpt_bi = torch.load(
+    #     GEN_BILSTM_CKPT, map_location=device, weights_only=False)
+    # gen_bi.load_state_dict(ckpt_bi['gen_state_dict'])
+    # gen_bi.eval()
+    # models['bilstm'] = gen_bi
 
     gen_ct = ConvT().to(device)
     ckpt_ct = torch.load(
@@ -88,12 +88,12 @@ def load_models_and_stats() -> Tuple[Dict[str, torch.nn.Module], np.ndarray, np.
     gen_up_dtw.eval()
     models['upconv_dtw'] = gen_up_dtw
 
-    gen_bi_dtw = BiLSTM().to(device)
-    ckpt_bi_dtw = torch.load(
-        GEN_BILSTM_DTW_CKPT, map_location=device, weights_only=False)
-    gen_bi_dtw.load_state_dict(ckpt_bi_dtw['gen_state_dict'])
-    gen_bi_dtw.eval()
-    models['bilstm_dtw'] = gen_bi_dtw
+    # gen_bi_dtw = BiLSTM().to(device)
+    # ckpt_bi_dtw = torch.load(
+    #     GEN_BILSTM_DTW_CKPT, map_location=device, weights_only=False)
+    # gen_bi_dtw.load_state_dict(ckpt_bi_dtw['gen_state_dict'])
+    # gen_bi_dtw.eval()
+    # models['bilstm_dtw'] = gen_bi_dtw
 
     gen_ct_dtw = ConvT().to(device)
     ckpt_ct_dtw = torch.load(
@@ -141,17 +141,19 @@ def make_plot(sample: np.ndarray, lead_mins, lead_maxs, model_name: str, display
     T = sample.shape[0]
     display_len = int(max(128, min(T, display_len)))
 
-    fig, axs = plt.subplots(n_leads, 1, figsize=(10, 8), sharex=True, dpi=150)
+    plt.rcParams.update({"font.size":50})
+
+    fig, axs = plt.subplots(n_leads, 1, figsize=(12, 8), sharex=True, dpi=150)
 
     lead_labels = ["Lead III", "Lead V3", "Lead V5"]
     x = np.arange(display_len)
 
-    for i, ax in enumerate(axs):
-        ax.plot(x, sample[:display_len, i], linewidth=2.0)
-        ax.set_title(lead_labels[i])
-        ax.set_xlabel("Time (samples)")
-        ax.set_ylabel("Amplitude (mV)")
-        ax.grid(True, alpha=0.5)
+    for i in range(1):
+        axs.plot(x, sample[:display_len, i], linewidth=2.0)
+        axs.set_title("Generated ECG")
+        axs.set_xlabel("Time (samples)")
+        axs.set_ylabel("Amplitude (mV)")
+        axs.grid(True, alpha=0.5)
     fig.tight_layout()
     return fig
 
